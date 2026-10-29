@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dls-video-downloader"
+version = "0.1.0"
+description = "Offline DLS YouTube inventory and selection planning"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+dls-video-downloader = "dls_video_downloader.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dls_video_downloader*"]
