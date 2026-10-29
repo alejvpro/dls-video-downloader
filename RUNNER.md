@@ -1,12 +1,16 @@
-# Cron-ready bounded runner — not scheduled yet
+# Scheduled forward acquisition runner
 
-No cron entry is installed and unattended downloading is not activated. Use the existing CLI and inventory:
+Cron was activated on October 29, 2026 at 1:01 a.m. Pacific with one labeled entry and four daily checks. Use the same command for a manual run:
 
 ```sh
 cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 2 --quiet
 ```
 
-Replace `run` with `discover` for discovery-only. Quiet mode suppresses routine output, including acquisition progress, but reports failures to stderr. Structured evidence remains local. No video ID is needed; `--only-id` remains an optional supervised restriction. Do not enable acquisition until separately authorized.
+Replace `run` with `discover` for discovery-only. Quiet mode suppresses routine output, including acquisition progress, but reports failures to stderr. Structured evidence remains local. No video ID is needed; `--only-id` remains an optional supervised restriction. This schedule authorizes ordinary forward acquisition, not historical backfill.
+
+## Acquisition naming contract
+
+The [acquisition naming contract](ACQUISITION-NAMING.md) intentionally keeps paths such as `state/acquisitions/MbO7y_90zUI/media.mkv` independent of mutable titles. This is an internal verified acquisition store. Future archive presentation and indexing use stable IDs and metadata; they do not rename or reinterpret these acquisition paths. No acquisition path, manifest, or receipt was changed for naming or presentation.
 
 ## Forward policy and coverage
 
@@ -63,29 +67,61 @@ Status shows recent runs, verified acquisition count, forward pending IDs and re
 
 Unexpected programming/database errors propagate as fatal failures rather than creating transient item retries. Fatal diagnostics include exception type and stack file/line/function locations, without source lines or locals. They are sanitized and retained in the run's bounded `fatal.stderr.log`. Failures before run-log initialization remain visible on stderr and, when possible, overwrite the bounded `state/runner-fatal.log` fallback (at most 256 KiB). `--quiet` suppresses neither. Read-only status/report commands never write this fallback. Use these existing bounded logs plus cron's normal error delivery; do not append stderr indefinitely to a separate file. If local logging fails, stderr still reports the original error.
 
-## Proposed cron schedule — not installed
+## Installed cron schedule
 
 ```cron
-0 11,14,18 * * * cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 2 --quiet
+0 11,14,18,21 * * * cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 2 --quiet
 ```
 
-The confirmed system timezone is `America/Los_Angeles`: **11 a.m., 2 p.m. and 6 p.m. Pacific**, including weekends for catch-up. No timezone environment line is needed or proposed. A child `TZ` setting must not be assumed to change cron's schedule timezone. DST keeps these daytime wall-clock hours; they are outside the early-morning missing/repeated hour. No existing task environment changes.
+The entry is enclosed by `# BEGIN dls-video-downloader (verified forward acquisition)` and `# END dls-video-downloader`. It was verified present exactly once, with all six previous jobs and every original crontab byte preserved. The confirmed system timezone is `America/Los_Angeles`: **11 a.m., 2 p.m., 6 p.m. and 9 p.m. Pacific**, including weekends for catch-up. No timezone environment line was added. A child `TZ` setting must not be assumed to change cron's schedule timezone. DST keeps these wall-clock hours; they are outside the early-morning missing/repeated hour. No existing task environment changed.
 
 Read-only power checks: AC `sleep 0`, display sleep 10 minutes, standby off, automatic restart on, no scheduled sleep/wake events. Automatic system sleep is disabled; display sleep does not prevent execution. Keep the Mac on AC and connected. Manual sleep, shutdown, power or network loss can still miss runs. [Apple documents that cron does not replay asleep/off jobs until the next designated time](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/ScheduledJobs.html). Catch-up is provided by this runner's known backlog and subsequent bounded discovery. No power setting changed.
 
-## Activation sequence
+## Operations, Friday checks and rollback
 
-1. The cron-readiness checkpoint includes the final safety review. Deployment still requires the separate authorizations below.
-2. Authorize Thursday October 29's supervised real discovery/acquisition. Confirm the new daily show is recognized, eligible, verified and repeat-safe; inspect reviews/format failures.
-3. Separately authorize installation of the single cron entry, preserving all existing entries. Verify a real Thursday cron invocation/environment before departure and confirm access to status/failure reporting.
-4. Keep the Mac awake/on AC and connected Friday October 30. Review the 11 a.m., 2 p.m. and 6 p.m. outcomes for the daily show and late Club upload. An upload after 6 p.m. is caught Saturday at 11 a.m.; this is not immediate monitoring.
+Use the manual command at the top of this document, or `status` / `status --json` above to inspect recent success/failure, pending work and retry delays. Detailed per-run records are under `state/runs/`; fatal diagnostics are in the run directory or `state/runner-fatal.log`. Error delivery before Python starts still depends on cron's stderr/mail handling; verify a real scheduled firing and continue checking status. No indefinitely appended cron-output file is used.
+
+Friday October 30 is the first full unattended day. The daily livestream and The Club are selected/enriched independently. Incomplete live broadcasts are deferred. The late Club upload can be picked up at 6 p.m., 9 p.m., or a subsequent run; an upload after 9 p.m. is caught by the next day's 11 a.m. check. Missing strict AV1/Opus formats cause a visible retry delay, never a fallback. All automatic acquisition requires verified dates on or after October 26. Missed runs catch up through the inventory backlog and bounded channel scans; coverage gaps are reported rather than silently ignored. Keep the Mac on AC, awake and connected.
+
+To disable only this task, use `crontab -e` and remove only the labeled BEGIN/END block and its one DLS command. Preserve every other entry, comment and line. This does not delete acquired files or change inventory decisions. Confirm no active DLS entry remains before doing any manual recovery work.
+
+The complete pre-activation crontab is backed up privately outside Git:
+
+```text
+/Users/alejandroveloz/.local/state/dls-video-downloader/cron-backups/crontab-before-dls-20261029T075615522038Z.txt
+```
+
+The backup is mode `0600` in a `0700` directory and contains sensitive existing configuration. Do not display it in logs or commit it. To restore that entire snapshot, use stdin (which avoids the long-filename handling issue observed during installation):
+
+```sh
+/opt/homebrew/bin/python3 - <<'PY'
+from pathlib import Path
+import subprocess
+backup = Path('/Users/alejandroveloz/.local/state/dls-video-downloader/cron-backups/crontab-before-dls-20261029T075615522038Z.txt')
+subprocess.run(['/usr/bin/crontab', '-'], input=backup.read_bytes(), check=True)
+PY
+```
+
+If other jobs or credentials have changed since backup, disable only the DLS block instead of restoring the old snapshot. Backup checksums and the installed-entry receipt are recorded in ignored `state/cron-activation.json`; it contains no full crontab copy. `state/` (SQLite, acquisitions, manifests, snapshots, staging, logs and validation records), `.test-tmp/`, and local research extracts remain outside Git. The private backup is outside this repository entirely.
 
 Strict 398+251 remains required. Missing AV1 is delayed and reported, never silently substituted. Receipt and coverage problems require operator review. A future launchd migration is outside scope.
 
-## Readiness validation
+## Activation validation — October 29
+
+The exact runner command was invoked manually in a minimal noninteractive environment at 12:56 a.m. Pacific. Run `2026-10-29T075640.198004+0000-87fb1953` completed successfully at 12:59 a.m.: 25 Live entries, 75 Videos entries, no new IDs, eight full enrichments, zero acquisition attempts and zero failures. No eligible missing Thursday broadcast was identified in those bounded results at that early hour; no ID was forced and there was no polling loop. The three existing acquisitions were skipped and the historical approval was explicitly deferred. A future scheduled check will handle Thursday's show when it is discovered, dated and completed.
+
+Cron installation was verified at 1:01 a.m. Pacific. The initial file-based attempt failed without changing the original crontab; the final stdin installation and verification succeeded. All previous bytes are preserved. The manual runner test is **not** evidence that cron fired: no actual scheduled execution had occurred when activation was checked at 1:02 a.m.; the first scheduled check is Thursday at 11 a.m. Inspect its result before departure.
+
+After the manual run, the inventory has 400 IDs, 437 observations, four unchanged manual decisions, and the same three acquisitions. New observations reflect bounded discovery and enrichment, not additional media. Existing media SHA-256, sizes, inodes, manifests and acquisition receipts match the pre-activation baseline. No acquisition naming logic, source code, format or classification rule was changed in this activation step. This activation and naming documentation is recorded in a separate documentation checkpoint.
+
+## Prior readiness validation (before activation)
 
 All **82 offline tests passed**, including persisted cooldown/recovery, repeated-failure backoff, stale/active/linked/evidence cleanup, real concurrent processes, inherited lock lifetime, coverage gaps, Club enrichment behind 70 clips, strict scheduled dates, manual historical exceptions, per-run limits, bounded logs, and exit reporting. Final safety-review tests additionally cover atomic migration rollback/retry, retry visibility in a separate process, UTF-8-safe log truncation, fatal programming errors and secondary reporting failures, quiet pre-initialization failure diagnostics, and explicit FFmpeg/Node paths for discovery.
 
 A minimal-environment real discovery-only run (`--streams-limit 25 --videos-limit 75 --max-enrich 0`) completed successfully at `2026-10-29T06:59:22Z`: 25 Live entries, 75 Videos entries, zero new IDs, zero acquisitions, zero failures. Its result is `state/runs/2026-10-29T065857.588008+0000-87b68be1/summary.json`. It established both scan frontiers. Existing historical approval was visibly deferred by forward-only policy. Six changed flat payloads added observations (417 → 423); all previous observations, initial titles, decisions, classification history and known metadata fields remain intact. Classification totals remain 84 daily shows, 19 The Club, 92 Skip and 205 Review.
 
 There are still 400 IDs, four manual decisions, and three verified acquisitions. October 26–28 media sizes/inodes/SHA-256 and manifest bytes match the pre-change baseline; acquisition/attempt receipts are identical. No production files were deleted. The existing crontab checksum matches. Source classification rules, format requirements, forward boundary, system/runtime settings and sibling projects were not changed. The final safety review performs no additional live discovery or acquisition; the readiness checkpoint is committed separately from cron activation.
+
+### Post-activation check — October 29, 1:14 a.m. Pacific
+
+The installed crontab checksum still matches the activation receipt, the original pre-activation content remains an exact prefix, and the DLS command occurs exactly once. Only the two known manual run records exist; no scheduled invocation has occurred yet. The first check remains due at 11 a.m. Pacific. The latest manual run recorded no new IDs, no downloads and no failures, with no pending retry state. No additional discovery or acquisition was triggered for this check.

@@ -1,12 +1,12 @@
 # DLS Video Downloader
 
-This project inventories and acquires selected official Dan Le Batard Show YouTube videos. YouTube video IDs identify videos permanently; titles and dates do not. The inventory and selection planner work offline. Explicit acquisition and bounded recent channel discovery are implemented; comments, scheduling, historical backfill, and Archiver integration remain future work. See [bounded runner usage and operational limits](RUNNER.md).
+This project inventories and acquires selected official Dan Le Batard Show YouTube videos. YouTube video IDs identify videos permanently; titles and dates do not. The inventory and selection planner work offline. Explicit acquisition and bounded recent channel discovery are implemented; cron scheduling is active, while comments, historical backfill, and Archiver integration remain future work. See [bounded runner usage and operational limits](RUNNER.md).
 
-One manually invoked metadata-only validation enriched the October 26–28 daily shows. See [validation findings](METADATA-VALIDATION.md) for formats, runtime warnings, and verification. This does not implement a network acquisition workflow.
+One manually invoked metadata-only validation enriched the October 26–28 daily shows. See [validation findings](METADATA-VALIDATION.md) for formats, runtime warnings, and verification. The acquisition and bounded discovery workflows are documented below.
 
 nvm 0.40.8 and Node 22.23.4 are installed alongside the original Node 16. New interactive zsh sessions default to Node 22; existing scheduled jobs retain their explicit Node 16 path. See [runtime usage and rollback](NODE-RUNTIME.md) for shell configuration, backups, and the independent explicit yt-dlp runtime path.
 
-The supervised October 28 bounded discovery/acquisition test succeeded. See [discovery validation](DISCOVERY-VALIDATION.md) for counts, idempotency, media verification, and remaining blockers before cron.
+The supervised October 28 bounded discovery/acquisition test succeeded. See [discovery validation](DISCOVERY-VALIDATION.md) for counts, idempotency and media verification; see RUNNER.md for current cron operations.
 
 ## Requirements and usage
 
@@ -52,21 +52,23 @@ SQLite `user_version` guards schema compatibility. Writable opens migrate older 
 
 Channel identity is stored in metadata. Allowlisted metadata preserves titles, full descriptions, source date/timestamp fields, durations, live/availability flags, author/channel fields, counters, tags, categories, and language. Operational tables intentionally omit formats, thumbnails, and temporary playback URLs. Original research files remain the raw evidence; this is not a lossless yt-dlp dump archive. Database observation snapshots are not yet Archiver artifacts.
 
-Identical input bytes/source are a complete no-op, including sighting times. Changed input files can update sightings without creating identical metadata payloads again. Returning to a previously observed payload reuses its content record; the merged latest values can still change. Observation rows represent distinct content, not every polling event. Future network attempts will need separate attempt records when acquisition is implemented.
+Identical input bytes/source are a complete no-op, including sighting times. Changed input files can update sightings without creating identical metadata payloads again. Returning to a previously observed payload reuses its content record; the merged latest values can still change. Observation rows represent distinct content, not every polling event. Acquisition attempts are recorded separately in `acquisition_attempts`.
 
 Initial title means first title imported by this application. Latest values follow source observation time (`epoch`, falling back to import time). Missing/null fields never erase known values. Older observations do not overwrite newer values. Later flat observations can update titles and counters, but cannot downgrade full-extraction descriptive/status fields. Changed full descriptions remain in observations. A future explicit-null/deletion policy must be developed from real refresh evidence.
 
 Source publication dates are separate from application discovery/import times and metadata observation times. Reliable `release_date` precedes `upload_date`; differing values produce a warning. Title dates and discovery dates never establish publication. Timestamp fields are preserved but are not currently converted into publication dates. Flat research entries therefore remain explicitly date-unknown.
 
-Back up the local SQLite database when the application is stopped; logs are not a substitute for it. Import/classification/decision evidence is persistent. Explicit acquisition retains per-attempt sanitized tool diagnostics; general rotated runtime logs remain future work.
+Back up the local SQLite database when the application is stopped; logs are not a substitute for it. Import/classification/decision evidence is persistent. Explicit acquisition retains per-attempt sanitized tool diagnostics; bounded runner logs are described in RUNNER.md.
 
 ## Controlled single-video acquisition
+
+The ID-based storage layout is intentional; see the [acquisition naming contract](ACQUISITION-NAMING.md). Titles and archive presentation never determine acquisition paths.
 
 ```sh
 python3 -B -m dls_video_downloader download MbO7y_90zUI
 ```
 
-The controlled acquisitions have authorized October 26–28 only; further media acquisition requires authorization. The command takes exactly one existing ID and optional `--start-date`; it never enumerates or queues other videos. Effective selection and eligibility must allow acquisition. Manual approval can select a Review/Skip item; manual rejection always blocks it. The current strict profile requires ready official-channel metadata (`was_live` or `not_live`), formats **398 (AV1 720p30) + 251 (Opus)**, and MKV merging. There is no fallback, transcoding, retry loop, or automatic schedule. General format selection and uploaded-program readiness remain later work. The resolution ceiling remains 720p.
+Scheduled forward acquisition is authorized from October 26 onward; see RUNNER.md for its limits. The command takes exactly one existing ID and optional `--start-date`; it never enumerates or queues other videos. Effective selection and eligibility must allow acquisition. Manual approval can select a Review/Skip item; manual rejection always blocks it. The current strict profile requires ready official-channel metadata (`was_live` or `not_live`), formats **398 (AV1 720p30) + 251 (Opus)**, and MKV merging. There is no format fallback, transcoding or within-run retry loop. Cron invokes the bounded runner on the schedule documented in RUNNER.md. General format selection and uploaded-program readiness remain later work. The resolution ceiling remains 720p.
 
 Executables are explicit: `/usr/local/bin/yt-dlp-new`, the versioned Node path documented above, and existing `/opt/homebrew/bin/ffmpeg` / `ffprobe`. Ambient yt-dlp configuration is ignored. Preflight metadata stays in memory except for sanitized allowlisted metadata; expiring playback URLs are omitted from retained diagnostics and manifests. Format sizes must be available; free-space budget is three times combined advertised stream size plus 1 GiB for download/merge headroom. This estimate cannot prevent unrelated processes consuming space later.
 
@@ -111,12 +113,16 @@ Automatic content classification and acquisition eligibility are independent:
 
 First establish reliable forward discovery/downloads from October 26, then backfill backward in bounded sections: the preceding days of October and September 2026, earlier months, eventually approximately June 2021. Inclusive planning ranges and permanent IDs support this without duplicating inventory or decisions. Backfill-session progress and verified download records will be added with backfill/acquisition; they are not implemented now. Historical separate hours, segments, and compiled shows require evidence-based rules later.
 
-Future media preferences: maximum 720p, AV1 preferred when available, another codec as fallback, original video/audio streams retained without transcoding, audio required. Record actual codecs, resolution, container, selected formats, and size. Do not mandate a container until controlled format tests. Advertised size/availability is not proof of downloadability. Separate future transcoding remains possible.
+Future media preferences: maximum 720p, AV1 preferred when available, another codec as fallback, original video/audio streams retained without transcoding, audio required. Record actual codecs, resolution, container, selected formats, and size. The current verified profile uses MKV; broader format/container choices remain future work. Advertised size/availability is not proof of downloadability. Separate future transcoding remains possible.
 
-Later acquisition must use a configurable explicit yt-dlp executable path, initially `/usr/local/bin/yt-dlp-new` (user-verified 2026.10.26). Leave `/opt/homebrew/bin/yt-dlp` untouched. Investigate the missing supported JavaScript runtime warning and verify FFmpeg/FFprobe before attempting media retrieval. No dependencies are installed or upgraded here.
+Later acquisition must use a configurable explicit yt-dlp executable path, initially `/usr/local/bin/yt-dlp-new` (user-verified 2026.10.26). Leave `/opt/homebrew/bin/yt-dlp` untouched. Node 22 challenge solving and FFmpeg/ffprobe have been validated; unattended invocations use explicit executable paths. No dependencies are installed or upgraded here.
 
 `podcast-scraper` acquires podcast audio independently. `dls-archiver` preserves/verifies immutable completed artifacts; its proposed downloader handoff is not implemented here. The future Indexer interprets episodes, segments, relationships, and timestamp comments. This project will acquire video and source observations; it does not implement indexing, archive preservation, or a website.
 
 ### Future local review interface (not implemented)
 
 Plan a browser interface bound to localhost on the Mac mini, using the existing SQLite inventory. Keep, Skip, and Clear Decision must append reversible manual-decision history and immediately affect subsequent selection. Include active forward reviews, historical reviews, resolved decisions, history inspection, and export for periodic rule refinement. Display YouTube-hosted thumbnails directly from their URLs; a local cache is not required. Those browser requests will contact YouTube image hosting when the future interface is used. Phase 1 stores no thumbnail URLs in its sanitized operational metadata, so providing those URLs remains future UI work. No UI, thumbnail request, or decision export feature is implemented in this refinement.
+
+### Future comment preservation (not implemented)
+
+IrishWeegee's timestamped YouTube comments are valuable source material. An existing yt-dlp proof of concept successfully retrieved an IrishWeegee chapter comment, but comment collection is not implemented in this application. Future collection should preserve original text and comment identifiers, available timestamps, and observed edit history rather than overwriting earlier observations. Comments may appear or change after a video's initial publication; refresh must run independently of media downloads and must not block or interfere with scheduled acquisition. The future Indexer, not this downloader, will interpret comments into structured chapters.
