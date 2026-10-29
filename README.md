@@ -27,13 +27,13 @@ python3 -B -m unittest discover -s tests -v
 
 Optional installation in your own virtual environment: `python -m pip install -e .` (packaging tools may require network access). This provides `dls-video-downloader`. Runtime Python dependencies: none.
 
-The default database is `state/inventory.sqlite3`; override it before the subcommand with `--db /path/to/inventory.sqlite3`. `status` and `plan` open an existing database in SQLite read-only mode and never initialize one. Both support `--json`, `--details`, `--start-date YYYY-MM-DD`, and optional inclusive `--end-date YYYY-MM-DD`. Plan lists every item and its classification/eligibility reasons. JSON includes all records and per-item warnings. Exit status is 0 on success, 2 on invalid input or operational errors. Import and decision updates are transactional; a failed multi-file import rolls back its inventory changes.
+The default database is `state/inventory.sqlite3`; override it before the subcommand with `--db /path/to/inventory.sqlite3`. `status` and `plan` open an existing database in SQLite read-only mode and never initialize one. Both support `--json`, `--details`, `--start-date YYYY-MM-DD`, and optional inclusive `--end-date YYYY-MM-DD`. Plan lists every item and its classification/eligibility reasons. JSON includes all records and per-item warnings. Exit codes are 0 for success, 2 for partial failure/usage errors, 1 for fatal failure, 75 for overlap, and 130 for interruption. Import and decision updates are transactional; a failed multi-file import rolls back its inventory changes.
 
 The three root research JSON files remain exploratory inputs, not bundled application fixtures or complete channel inventories. Inputs are not modified or copied. `--other` imports another local extraction; `--full` uses source `other`. Metadata depth is determined independently from playlist structure / `_type`. No yt-dlp executable is invoked.
 
-## Inventory schema (version 2)
+## Inventory schema (version 3)
 
-SQLite `user_version` guards schema compatibility. Writable opens migrate schema 1 to schema 2, adding acquisition tables without changing existing inventory records. Read-only reporting accepts either version; unknown versions are rejected.
+SQLite `user_version` guards schema compatibility. Writable opens migrate older schemas to version 3, adding acquisition and operational tables without changing original records. Read-only reporting accepts versions 1–3; unknown versions are rejected.
 
 | Table | Meaning |
 | --- | --- |
@@ -45,6 +45,10 @@ SQLite `user_version` guards schema compatibility. Writable opens migrate schema
 | `decisions` | Append-only manual decisions and reasons by stable ID; latest row is current |
 | `acquisition_attempts` | Per-video attempt identity, working directory, start/finish times, running/failed/interrupted/complete state, and outcome summary |
 | `acquisitions` | One verified acquisition per video ID, with media/manifest paths, size, SHA-256, and completion time |
+| `retry_state` | Persistent per-video/operation failure count, reason, category, and next retry time |
+| `runner_runs` | Bounded recent run outcomes and summaries |
+| `scan_frontiers` | Previous scan head per tab for continuity checks |
+| `cleanup_events` | Bounded history of safe stale-file removals |
 
 Channel identity is stored in metadata. Allowlisted metadata preserves titles, full descriptions, source date/timestamp fields, durations, live/availability flags, author/channel fields, counters, tags, categories, and language. Operational tables intentionally omit formats, thumbnails, and temporary playback URLs. Original research files remain the raw evidence; this is not a lossless yt-dlp dump archive. Database observation snapshots are not yet Archiver artifacts.
 
@@ -72,7 +76,7 @@ Completion requires a nonempty MKV file, exactly one 720p30 AV1 video stream and
 
 A local advisory lock prevents concurrent acquisitions using the same output root. After successful verification and database recording, cleanup under this lock unlinks only an attempt's extra `media.mkv` name when it demonstrably shares the final media inode, then removes only empty staging directories. It never removes final media or recursively sweeps failed, interrupted, or unrelated attempts. Cleanup failure is reported as deferred and does not relabel a completed acquisition. A repeat invocation can retry cleanup after reverification. Legacy October 26 metadata/logs remain at their original `.work` paths because its unchanged manifest references them; only its extra media hard link is removed.
 
-Interrupted attempts retain partial data. An explicit retry before final publication starts a new isolated attempt, not a partial-file resume; old partials require separate review. A final file without a valid completed manifest blocks automatic retry for manual recovery. SIGKILL can leave status `running`; this never proves completion. These guarantees assume cooperative processes using the same lock and trusted local directories. This is acquisition evidence, not the Archiver's preservation/backup receipt. There is no external-drive handoff or general cleanup command. Offline acquisition tests use tiny disposable `.test-tmp/` fixtures and mocked tool responses.
+Interrupted attempts retain partial data. A retry after the persistent delay starts a new isolated attempt rather than resuming. A final file without a valid completed manifest requires manual recovery. SIGKILL can leave status `running`; this never proves completion. `cleanup` provides a dry-run plan for old owned staging files; the runner applies conservative bounded retention under its lock. See [retry/retention policy](RUNNER.md). Guarantees assume cooperative processes and trusted local directories. This is acquisition evidence, not the Archiver's preservation/backup receipt; no external-drive handoff exists. Offline tests use tiny disposable fixtures.
 
 The first October 26 acquisition and duplicate-protection check succeeded; see [pilot results](PILOT-ACQUISITION.md) for the verified streams, size, hash, and limitations.
 
@@ -101,7 +105,7 @@ Automatic content classification and acquisition eligibility are independent:
 - Manual rejection/skip: `blocked`.
 - Explicit approval: `eligible`, including older and date-unknown videos.
 
-`eligible` is a planning authorization, not a claim of completed/available/playable media. Later acquisition must independently verify readiness. Dates are parameters of each read-only plan, never permanent historical exclusions.
+`eligible` is a planning authorization, not a claim of completed/available/playable media. Acquisition independently verifies readiness. Dates are parameters of each read-only plan, never permanent historical exclusions. The scheduled runner adds a strict verified forward-date requirement even for approvals; explicit manual downloads retain historical approval exceptions.
 
 ## Later phases
 

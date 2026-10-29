@@ -196,7 +196,7 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(before, self.path.read_bytes())
         missing = self.root / "missing.sqlite3"
         with redirect_stderr(io.StringIO()):
-            self.assertEqual(main(["--db", str(missing), "status"]), 2)
+            self.assertEqual(main(["--db", str(missing), "status"]), 1)
         self.assertFalse(missing.exists())
 
 

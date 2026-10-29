@@ -4,10 +4,13 @@ from datetime import date
 import json
 import sqlite3
 import sys
+import io
+from contextlib import redirect_stdout, nullcontext
 from pathlib import Path
 
 from .classification import DEFAULT_START
 from .inventory import connect, decide, import_file, reclassify, report, seed
+from .operations import OperationBusy, cleanup_staging, runtime_report, fatal_diagnostic, write_log
 
 
 def iso_date(value):
@@ -36,11 +39,22 @@ def main(argv=None):
     download.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
     for name in ("discover", "run"):
         command = commands.add_parser(name, help="Bounded discovery" + (" and acquisition" if name == "run" else " only"))
-        command.add_argument("--per-tab", type=int, default=10)
-        command.add_argument("--max-enrich", type=int, default=3)
-        command.add_argument("--max-downloads", type=int, default=1)
+        command.add_argument("--per-tab", type=int, help="Override both tab limits")
+        command.add_argument("--streams-limit", type=int, default=25)
+        command.add_argument("--videos-limit", type=int, default=75)
+        command.add_argument("--max-enrich", type=int, default=8)
+        command.add_argument("--max-downloads", type=int, default=2)
+        command.add_argument("--stale-hours", type=int, default=72)
+        command.add_argument("--retry-base-minutes", type=int, default=60)
+        command.add_argument("--retry-max-hours", type=int, default=24)
+        command.add_argument("--quiet", action="store_true", help="Only report errors; detailed records remain in state/runs")
         command.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
         command.add_argument("--only-id", help="Supervised acquisition restriction; never changes discovery rules")
+    cleanup = commands.add_parser("cleanup", help="Inspect stale staging cleanup; dry-run unless --execute")
+    cleanup.add_argument("--execute", action="store_true")
+    cleanup.add_argument("--stale-hours", type=int, default=72)
+    cleanup.add_argument("--max-bytes", type=int, default=5 * 1024**3)
+    cleanup.add_argument("--max-files", type=int, default=100)
     for name in ("status", "plan"):
         command = commands.add_parser(name)
         command.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
@@ -58,6 +72,7 @@ def main(argv=None):
         try:
             if readonly:
                 result = report(db, args.start_date, args.end_date)
+                result['runtime'] = runtime_report(db, result['items'], args.start_date)
                 if args.json:
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 else:
@@ -66,6 +81,12 @@ def main(argv=None):
                     print(f"Automatic date range: {args.start_date} through {args.end_date or 'open-ended'}")
                     print(f"Warnings: {sum(bool(i['warnings']) for i in result['items'])} records; {result['classifications'].get('review', 0)} ambiguous classifications. Use plan --json for complete evidence.")
                     print("Eligibility is planning authorization only; acquisition readiness has not been checked.")
+                    runtime = result['runtime']
+                    print(f"Verified acquisitions: {runtime['verified_acquisitions']}; pending forward: {len(runtime['pending_forward'])}; retry records: {len(runtime['retry_delays'])}")
+                    for row in runtime['recent_runs']:
+                        print(f"{row['started_at']} {row['status']} | new acquisitions={len(row['summary'].get('acquired') or [])} failures={len(row['summary'].get('failures') or [])} | {row['run_id']}")
+                    for row in runtime['retry_delays'][:10]:
+                        print(f"Retry {row['video_id']} {row['operation']}: {row['category']} until {row['next_retry']} ({row['failures']} failures)")
                     if args.details or args.command == "plan":
                         for item in result["items"]:
                             print(f"{item['id']} | {item['classification']} | manual={item['decision']} | {item['eligibility']} | {item['title']}\n  {item['classification_reason']}; {item['eligibility_reason']}")
@@ -73,12 +94,23 @@ def main(argv=None):
                                 print(f"  Warning: {warning}")
             elif args.command in ("discover", "run"):
                 from .discovery import workflow
-                result = workflow(db, acquire_media=args.command == "run", per_tab=args.per_tab,
-                                  max_enrich=args.max_enrich, max_downloads=args.max_downloads,
-                                  start=args.start_date, only_id=args.only_id)
-                print(json.dumps(result, indent=2))
+                with redirect_stdout(io.StringIO()) if args.quiet else nullcontext():
+                    result = workflow(db, acquire_media=args.command == "run", per_tab=args.per_tab,
+                                      streams_limit=args.streams_limit, videos_limit=args.videos_limit,
+                                      max_enrich=args.max_enrich, max_downloads=args.max_downloads,
+                                      start=args.start_date, only_id=args.only_id, stale_hours=args.stale_hours,
+                                      retry_base_minutes=args.retry_base_minutes, retry_max_hours=args.retry_max_hours)
+                if not args.quiet:
+                    print(json.dumps(result, indent=2))
                 if result["failures"]:
+                    if args.quiet:
+                        print(f"{result['finished_at']} partial_failure: {len(result['failures'])} failures; {result['log']}", file=sys.stderr)
                     return 2
+            elif args.command == 'cleanup':
+                from .acquisition import PROJECT, operation_lock
+                with operation_lock(PROJECT / 'state/acquisitions'):
+                    print(json.dumps(cleanup_staging(db, PROJECT / 'state', execute=args.execute,
+                          retention_hours=args.stale_hours, max_bytes=args.max_bytes, max_files=args.max_files), indent=2))
             elif args.command == "download":
                 from .acquisition import acquire
                 print(json.dumps(acquire(db, args.id, args.start_date), indent=2))
@@ -96,10 +128,25 @@ def main(argv=None):
                         reclassify(db)
         finally:
             db.close()
+    except OperationBusy as exc:
+        from .inventory import now
+        print(f"{now()} overlap: {exc}", file=sys.stderr)
+        return 75
     except KeyboardInterrupt:
-        print("Interrupted; acquisition was not marked complete unless verification committed.", file=sys.stderr)
+        from .inventory import now
+        print(f"{now()} interrupted; acquisition was not marked complete unless verification committed.", file=sys.stderr)
         return 130
-    except (OSError, ValueError, sqlite3.Error, TypeError, AttributeError, OverflowError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
+    except Exception as exc:
+        from .inventory import now
+        diagnostic = f"{now()} fatal_failure: {fatal_diagnostic(exc)}"
+        print(diagnostic, file=sys.stderr)
+        # Pre-initialization errors have no run directory. Preserve the latest
+        # fatal diagnostic beside the database, without turning status into a writer.
+        parent = Path(args.db).resolve().parent
+        if not readonly and parent.is_relative_to(Path(__file__).resolve().parent.parent):
+            try:
+                write_log(parent / 'runner-fatal.log', diagnostic)
+            except OSError:
+                pass  # stderr remains authoritative if local logging also fails.
+        return 1
     return 0

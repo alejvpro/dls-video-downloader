@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from dls_video_downloader import acquisition as acq
 from dls_video_downloader.classification import CHANNEL
-from dls_video_downloader.inventory import connect, import_file, decide
+from dls_video_downloader.inventory import connect, import_file, import_document, decide
 
 ID = "MbO7y_90zUI"
 
@@ -165,6 +165,21 @@ class AcquisitionTests(unittest.TestCase):
         with patch.object(acq, "run", side_effect=self.fake_run):
             self.assertEqual(self.acquire()["status"], "complete")
 
+    def test_explicit_historical_approval_remains_available_manually(self):
+        self.metadata['upload_date'] = '20261025'
+        with self.db:
+            import_document(self.db, self.metadata, 'other', 'historical-fixture')
+            decide(self.db, ID, 'approve', 'Explicit historical exception')
+        with patch.object(acq, 'run', side_effect=self.fake_run):
+            self.assertEqual(self.acquire()['status'], 'complete')
+
+    def test_scheduled_acquisition_rechecks_source_date_before_media(self):
+        self.metadata['upload_date'] = '20261025'
+        with patch.object(acq, 'run', side_effect=self.fake_run):
+            with self.assertRaisesRegex(ValueError, 'forward-window'):
+                acq.acquire(self.db, ID, root=self.root/'outputs', _forward_only=True)
+        self.assertEqual(len(self.calls), 1)  # Metadata only, no media command.
+
     def test_missing_formats(self):
         self.metadata['formats'] = []
         with patch.object(acq, "run", side_effect=self.fake_run):
@@ -173,6 +188,31 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.db.execute("SELECT status FROM acquisition_attempts").fetchone()[0], "failed")
         self.assertEqual(self.db.execute("SELECT count(*) FROM acquisitions").fetchone()[0], 0)
+
+    def test_acquisition_failure_delay_then_recovery(self):
+        from datetime import timedelta
+        from dls_video_downloader import operations
+        available = self.metadata['formats']
+        self.metadata['formats'] = []
+        with patch.object(acq, 'run', side_effect=self.fake_run):
+            with self.assertRaises(ValueError):
+                self.acquire()
+        pending = self.db.execute("SELECT * FROM retry_state WHERE video_id=?", (ID,)).fetchone()
+        self.assertEqual(pending['failures'], 1)
+        with patch.object(acq, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'Retry deferred'):
+                self.acquire()
+            run.assert_not_called()
+        self.metadata['formats'] = available
+        with patch.object(operations, 'utc', return_value=operations.utc()+timedelta(days=1)), patch.object(acq, 'run', side_effect=self.fake_run):
+            self.assertEqual(self.acquire()['status'], 'complete')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM retry_state').fetchone()[0], 0)
+
+    def test_programming_error_does_not_create_transient_retry(self):
+        with patch.object(acq, '_acquire_locked', side_effect=RuntimeError('unexpected fixture bug')):
+            with self.assertRaises(RuntimeError):
+                self.acquire()
+        self.assertEqual(self.db.execute('SELECT count(*) FROM retry_state').fetchone()[0], 0)
 
     def test_insufficient_storage(self):
         with patch.object(acq, "run", side_effect=self.fake_run), patch.object(acq.shutil, "disk_usage", return_value=type('Usage', (), {'free': 1})()):

@@ -38,7 +38,7 @@ def connect(path, readonly=False):
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     version = db.execute("PRAGMA user_version").fetchone()[0]
-    if version not in (0, 1, 2) or (readonly and version not in (1, 2)):
+    if version not in (0, 1, 2, 3) or (readonly and version not in (1, 2, 3)):
         db.close()
         raise ValueError(f"Unsupported inventory schema: {version}")
     if not readonly and version == 0:
@@ -82,6 +82,34 @@ def connect(path, readonly=False):
           size INTEGER NOT NULL, sha256 TEXT NOT NULL);
         PRAGMA user_version=2;
         """)
+    if not readonly and db.execute("PRAGMA user_version").fetchone()[0] == 2:
+        migration = """
+        CREATE TABLE retry_state (
+          video_id TEXT NOT NULL REFERENCES videos(id), operation TEXT NOT NULL,
+          failures INTEGER NOT NULL, category TEXT NOT NULL, reason TEXT NOT NULL,
+          last_failure TEXT NOT NULL, next_retry TEXT NOT NULL,
+          PRIMARY KEY(video_id, operation));
+        CREATE TABLE runner_runs (
+          run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
+          status TEXT NOT NULL, summary TEXT NOT NULL);
+        CREATE TABLE scan_frontiers (
+          source TEXT PRIMARY KEY, head_id TEXT NOT NULL, scanned_at TEXT NOT NULL);
+        CREATE TABLE cleanup_events (
+          cleaned_at TEXT NOT NULL, attempt_id TEXT NOT NULL,
+          path TEXT NOT NULL, size INTEGER NOT NULL);
+        PRAGMA user_version=3;
+        """
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                # Recheck under the write lock if another process migrated first.
+                if db.execute("PRAGMA user_version").fetchone()[0] == 2:
+                    for statement in migration.split(';'):
+                        if statement.strip():
+                            db.execute(statement)
+        except BaseException:
+            db.close()
+            raise
     return db
 
 

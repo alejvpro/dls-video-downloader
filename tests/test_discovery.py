@@ -2,12 +2,17 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import io
+from contextlib import redirect_stdout, redirect_stderr
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from dls_video_downloader import acquisition as media
 from dls_video_downloader.classification import CHANNEL
 from dls_video_downloader.discovery import workflow
 from dls_video_downloader.inventory import connect, decide, import_document, report
+from dls_video_downloader import operations
+from dls_video_downloader.cli import main
 
 DAILY = "IX9Dv4cBUKg"
 CLUB = "GbncAA6bkx4"
@@ -61,10 +66,19 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(first['classifications'], {'daily_show': 1, 'the_club': 1, 'skip': 1})
         self.assertEqual(set(first['eligible']), {DAILY, CLUB})
 
+    def test_discovery_executable_paths_do_not_depend_on_shell_path(self):
+        self.run_workflow()
+        for command in self.calls:
+            self.assertEqual(command[0], media.YT_DLP)
+            self.assertEqual(command[command.index('--ffmpeg-location')+1], media.FFMPEG)
+            self.assertEqual(command[command.index('--js-runtimes')+1], 'node:'+media.NODE)
+
     def test_limits_supervised_filter_and_existing_receipt(self):
         self.run_workflow()
+        receipt = self.state / 'fixture-receipt.json'
+        receipt.write_text('{}')
         with self.db:
-            self.db.execute('INSERT INTO acquisitions VALUES(?,?,?,?,?,?)', (CLUB, 'time', 'media', 'receipt', 10, 'hash'))
+            self.db.execute('INSERT INTO acquisitions VALUES(?,?,?,?,?,?)', (CLUB, 'time', str((self.state/'media').relative_to(media.PROJECT)), str(receipt.relative_to(media.PROJECT)), 10, 'hash'))
         with patch.object(media, 'acquire', return_value={'status': 'complete', 'sha256': 'hash'}) as acquire:
             result = self.run_workflow(acquire_media=True, only_id=DAILY, max_downloads=1)
         self.assertEqual(acquire.call_count, 1)
@@ -139,9 +153,147 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_bounds_and_zero_enrichment(self):
         with self.assertRaises(ValueError):
-            self.run_workflow(per_tab=51)
+            self.run_workflow(per_tab=201)
         result = self.run_workflow(per_tab=1, max_enrich=0, acquire_media=True)
         self.assertEqual(result['encountered'], {'live': 1, 'videos': 1})
         self.assertTrue(result['warnings'])
         self.assertEqual(result['download_attempts'], 0)
         self.assertEqual(len(self.calls), 2)
+
+    def test_persistent_delay_then_successful_retry(self):
+        at = datetime.now(timezone.utc)
+        with patch.object(operations, 'utc', return_value=at), patch.object(media, 'acquire', side_effect=ValueError('network timeout')):
+            first = self.run_workflow(acquire_media=True, only_id=DAILY)
+        self.assertEqual(first['status'], 'partial_failure')
+        self.db.close()
+        self.db = connect(self.state / 'db.sqlite3')
+        with patch.object(operations, 'utc', return_value=at + timedelta(minutes=30)), patch.object(media, 'acquire') as acquire:
+            second = self.run_workflow(acquire_media=True, only_id=DAILY)
+            acquire.assert_not_called()
+        self.assertEqual(second['download_attempts'], 0)
+        self.assertTrue(second['retry_deferred'])
+        with patch.object(operations, 'utc', return_value=at + timedelta(minutes=61)), patch.object(media, 'acquire', return_value={'status': 'complete', 'sha256': 'hash'}) as acquire:
+            third = self.run_workflow(acquire_media=True, only_id=DAILY)
+        self.assertEqual(acquire.call_count, 1)
+        self.assertEqual(third['status'], 'success')
+        self.assertEqual(self.db.execute("SELECT count(*) FROM retry_state WHERE operation='acquisition'").fetchone()[0], 0)
+
+    def test_repeated_failures_back_off_without_double_counting(self):
+        at = datetime.now(timezone.utc)
+        for delay in (0, 61):
+            with patch.object(operations, 'utc', return_value=at + timedelta(minutes=delay)), patch.object(media, 'acquire', side_effect=ValueError('network timeout')):
+                self.run_workflow(acquire_media=True, only_id=DAILY)
+        row = self.db.execute("SELECT * FROM retry_state WHERE video_id=? AND operation='acquisition'", (DAILY,)).fetchone()
+        self.assertEqual(row['failures'], 2)
+        self.assertEqual(datetime.fromisoformat(row['next_retry']), at + timedelta(minutes=181))
+
+    def test_pre_window_and_unknown_approvals_require_manual_command(self):
+        self.full[DAILY]['release_date'] = '20261025'
+        del self.full[CLUB]['upload_date']
+        with self.db:
+            decide(self.db, DAILY, 'approve', 'Historic exception')
+            decide(self.db, CLUB, 'approve', 'Undated exception')
+        with patch.object(media, 'acquire') as acquire:
+            result = self.run_workflow(acquire_media=True)
+            acquire.assert_not_called()
+        self.assertEqual(result['eligible'], [])
+        self.assertEqual(len(result['deferred']), 2)
+        self.assertTrue(all(i['eligibility'] == 'eligible' for i in report(self.db, '2026-10-26')['items'] if i['decision']))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM decisions').fetchone()[0], 2)
+
+    def test_default_videos_coverage_finds_club_after_many_clips(self):
+        clips = [{'id': f'clip{i:07d}', '_type': 'url', 'title': 'A routine excerpt', 'duration': 500} for i in range(70)]
+        self.videos = clips + [self.videos[0]]
+        with patch.object(media, 'acquire', return_value={'status': 'complete', 'sha256': 'hash'}) as acquire:
+            result = self.run_workflow(acquire_media=True, only_id=CLUB)
+        self.assertEqual(result['limits']['videos'], 75)
+        self.assertEqual(result['limits']['streams'], 25)
+        self.assertIn(CLUB, result['enriched'])
+        self.assertEqual(acquire.call_args.args[1], CLUB)
+        full_calls = [c for c in self.calls if '--flat-playlist' not in c]
+        self.assertEqual(len(full_calls), 2)  # Daily + Club, not 70 excerpts.
+
+    def test_daily_backlog_cannot_starve_new_club_enrichment(self):
+        base = dict(self.live[0])
+        for i in range(20):
+            video_id = f'live{i:07d}'
+            self.live.append({**base, 'id': video_id})
+            self.full[video_id] = {**self.full[DAILY], 'id': video_id}
+        self.videos = [{'id': f'clip{i:07d}', '_type': 'url', 'title': 'An ordinary excerpt', 'duration': 500} for i in range(70)] + [self.videos[0]]
+        result = self.run_workflow(max_enrich=2)
+        self.assertEqual(set(result['enriched']), {DAILY, CLUB})
+
+    def test_cli_exit_codes_and_quiet_failure_visibility(self):
+        arguments = ['--db', str(self.state/'db.sqlite3'), 'run', '--quiet']
+        with patch('dls_video_downloader.discovery.workflow', side_effect=operations.OperationBusy('busy')), redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(main(arguments), 75)
+        self.assertIn('overlap', error.getvalue())
+        partial = {'failures': [{'error': 'network timeout'}], 'finished_at': 'timestamp', 'log': 'events.jsonl'}
+        with patch('dls_video_downloader.discovery.workflow', return_value=partial), redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(main(arguments), 2)
+        self.assertEqual(output.getvalue(), '')
+        self.assertIn('partial_failure', error.getvalue())
+        with patch('dls_video_downloader.discovery.workflow', side_effect=ValueError('fatal fixture')), redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(main(arguments), 1)
+        self.assertIn('fatal_failure', error.getvalue())
+
+    def test_unexpected_item_error_is_fatal_not_retryable(self):
+        def bug(*args, **kwargs):
+            raise KeyError('unexpected fixture bug')
+        with patch.object(media, 'acquire', side_effect=bug):
+            with self.assertRaises(KeyError):
+                self.run_workflow(acquire_media=True, only_id=DAILY)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM retry_state').fetchone()[0], 0)
+        row = self.db.execute('SELECT * FROM runner_runs').fetchone()
+        self.assertEqual(row['status'], 'fatal_failure')
+        diagnostic = (self.state/'runs'/row['run_id']/'fatal.stderr.log').read_text()
+        self.assertIn('KeyError', diagnostic)
+        self.assertIn('test_discovery.py:', diagnostic)
+
+    def test_quiet_error_before_run_initialization_has_safe_diagnostics(self):
+        arguments = ['--db',str(self.state/'db.sqlite3'),'run','--quiet']
+        def bug(*args, **kwargs):
+            raise RuntimeError('Cookie: sensitive-fixture\nhttps://example.com/play?token=sensitive-fixture')
+        with patch('dls_video_downloader.discovery.workflow',side_effect=bug), redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(main(arguments),1)
+        self.assertEqual(output.getvalue(),'')
+        self.assertIn('RuntimeError',error.getvalue())
+        self.assertIn('test_discovery.py:',error.getvalue())
+        self.assertNotIn('sensitive-fixture',error.getvalue())
+        fallback = self.state/'runner-fatal.log'
+        self.assertTrue(fallback.is_file())
+        self.assertNotIn('sensitive-fixture',fallback.read_text())
+
+    def test_per_run_download_budget_reports_remaining_candidates(self):
+        with patch.object(media, 'acquire', return_value={'status': 'complete', 'sha256': 'hash'}) as acquire:
+            result = self.run_workflow(acquire_media=True, max_downloads=1)
+        self.assertEqual(acquire.call_count, 1)
+        self.assertEqual(result['download_attempts'], 1)
+        self.assertEqual(len(result['deferred']), 1)
+
+    def test_coverage_frontier_gap_is_visible_and_does_not_advance(self):
+        self.run_workflow()
+        self.live = []
+        result = self.run_workflow()
+        self.assertEqual(result['status'], 'partial_failure')
+        self.assertTrue(any(f['operation'] == 'coverage' for f in result['failures']))
+        self.assertEqual(self.db.execute("SELECT head_id FROM scan_frontiers WHERE source='live'").fetchone()[0], DAILY)
+
+    def test_enrichment_failure_delay_persists(self):
+        self.full[DAILY] = {'id': DAILY}
+        self.run_workflow()
+        self.calls = []
+        result = self.run_workflow()
+        self.assertTrue(result['retry_deferred'])
+        self.assertFalse(any(c[-1].endswith('='+DAILY) for c in self.calls))
+
+    def test_run_history_and_terminal_report(self):
+        result = self.run_workflow()
+        row = self.db.execute('SELECT * FROM runner_runs WHERE run_id=?', (result['run_id'],)).fetchone()
+        self.assertEqual(row['status'], 'success')
+        self.assertIsNotNone(row['finished_at'])
+        summary = json.loads((Path(result['log']).parent / 'summary.json').read_text())
+        self.assertEqual(summary['status'], 'success')
+        status = operations.runtime_report(self.db, report(self.db, '2026-10-26')['items'], '2026-10-26')
+        self.assertEqual(len(status['recent_runs']), 1)
+        self.assertEqual(set(status['pending_forward']), {DAILY, CLUB})

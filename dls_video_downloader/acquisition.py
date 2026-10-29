@@ -11,8 +11,9 @@ import signal
 import uuid
 from contextlib import contextmanager
 
-from .classification import CHANNEL, DEFAULT_START
+from .classification import CHANNEL, DEFAULT_START, publication
 from .inventory import FIELDS, encoded, now, report
+from .operations import OperationBusy, retry_failure, retry_pending, retry_success, safe_text, write_log
 
 PROJECT = Path(__file__).resolve().parent.parent
 YT_DLP = "/usr/local/bin/yt-dlp-new"
@@ -20,6 +21,7 @@ NODE = "/Users/alejandroveloz/.nvm/versions/node/v22.23.4/bin/node"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 MAX_HEIGHT = 720
+_operation_fd = None
 
 
 def sha256(path):
@@ -34,7 +36,8 @@ def run(args, log, timeout):
     # A terminated yt-dlp must not leave its FFmpeg/Node children running after
     # the parent releases the operation lock.
     with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=True, start_new_session=True) as process:
+                          text=True, start_new_session=True,
+                          pass_fds=(_operation_fd,) if _operation_fd is not None else ()) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except BaseException as exc:
@@ -43,15 +46,16 @@ def run(args, log, timeout):
             except ProcessLookupError:
                 pass
             _, stderr = process.communicate()
-            log.write_text(re.sub(r"https?://[^\s'\"]+", "[URL omitted]", stderr))
+            write_log(log, stderr)
             if isinstance(exc, subprocess.TimeoutExpired):
                 raise ValueError("External command timed out; partial output retained") from exc
             raise
     # Verbose merger evidence is useful; playback and other request URLs are not.
-    diagnostic = re.sub(r"https?://[^\s'\"]+", "[URL omitted]", stderr)
-    log.write_text(diagnostic)
+    write_log(log, stderr)
     if process.returncode:
-        raise ValueError(f"External command failed (exit {process.returncode}); see {log.name}")
+        errors = [line for line in safe_text(stderr).splitlines() if 'ERROR' in line]
+        reason = errors[-1][:500] if errors else f"External command failed (exit {process.returncode})"
+        raise ValueError(f"{reason}; see {log.name}")
     return stdout
 
 
@@ -121,16 +125,22 @@ def cleanup_completed(db, manifest, media, root):
 
 @contextmanager
 def operation_lock(root):
+    global _operation_fd
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".acquisition.lock").open("a") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise ValueError("Another acquisition or discovery operation is running") from exc
-        yield
+            raise OperationBusy("Another acquisition or discovery operation is running") from exc
+        _operation_fd = lock.fileno()
+        try:
+            yield
+        finally:
+            _operation_fd = None
 
 
-def acquire(db, video_id, start=DEFAULT_START, *, root=None, _lock_held=False):
+def acquire(db, video_id, start=DEFAULT_START, *, root=None, _lock_held=False,
+            retry_base_minutes=60, retry_max_hours=24, _forward_only=False):
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
         raise ValueError("Invalid YouTube video ID")
     selected = next((i for i in report(db, start)["items"] if i["id"] == video_id), None)
@@ -140,13 +150,25 @@ def acquire(db, video_id, start=DEFAULT_START, *, root=None, _lock_held=False):
     if not root.is_relative_to(PROJECT):
         raise ValueError("Acquisition output must remain inside the project")
     root.mkdir(parents=True, exist_ok=True)
+    def perform():
+        verified = db.execute("SELECT 1 FROM acquisitions WHERE video_id=?", (video_id,)).fetchone()
+        pending = retry_pending(db, video_id, "acquisition")
+        if pending and not verified:
+            raise ValueError(f"Retry deferred until {pending['next_retry']}: {pending['category']}")
+        try:
+            result = _acquire_locked(db, video_id, root, forward_start=start if _forward_only else None)
+        except (OSError, ValueError, KeyboardInterrupt) as exc:
+            retry_failure(db, video_id, "acquisition", exc, base_minutes=retry_base_minutes, max_hours=retry_max_hours)
+            raise
+        retry_success(db, video_id, "acquisition")
+        return result
     if _lock_held:
-        return _acquire_locked(db, video_id, root)
+        return perform()
     with operation_lock(root):
-        return _acquire_locked(db, video_id, root)
+        return perform()
 
 
-def _acquire_locked(db, video_id, root):
+def _acquire_locked(db, video_id, root, forward_start=None):
     final = root / video_id
     final.mkdir(exist_ok=True)
     if final.is_symlink() or final.resolve().parent != root:
@@ -179,6 +201,10 @@ def _acquire_locked(db, video_id, root):
         if (metadata.get("id") != video_id or metadata.get("channel_id") != CHANNEL
                 or metadata.get("live_status") not in ("was_live", "not_live") or metadata.get("is_live")):
             raise ValueError("Unexpected source identity or video not ready/completed")
+        if forward_start:
+            published, _ = publication(metadata)
+            if not published or published < forward_start:
+                raise ValueError("Current source metadata lacks a verified forward-window date")
         formats = {f["format_id"]: f for f in metadata.get("formats", [])}
         video, audio = formats.get("398", {}), formats.get("251", {})
         if (video.get("height") != MAX_HEIGHT or video.get("fps") != 30
@@ -226,5 +252,5 @@ def _acquire_locked(db, video_id, root):
     except BaseException as exc:
         status = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "failed"
         with db:
-            db.execute("UPDATE acquisition_attempts SET finished_at=?,status=?,detail=? WHERE attempt_id=?", (now(), status, type(exc).__name__, attempt))
+            db.execute("UPDATE acquisition_attempts SET finished_at=?,status=?,detail=? WHERE attempt_id=?", (now(), status, safe_text(exc)[:1000] or type(exc).__name__, attempt))
         raise
