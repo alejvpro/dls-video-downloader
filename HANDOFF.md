@@ -10,7 +10,7 @@ Existing checkpoints:
 - `139ca8dbf08d81647039a31b023fdbf8c5b4ef39`: unattended-operation safeguards.
 - `69ecd6ca0804872f897f7cafdfb1c29ce9c12bbc`: acquisition naming and active cron documentation.
 
-There is no Git remote. The offline suite currently contains 82 tests.
+There is no Git remote. The offline suite currently contains 112 tests, including 30 synthetic comment-store tests.
 
 ## Architecture and operations
 
@@ -50,7 +50,7 @@ The downloader acquires media and preserves source observations without interpre
 
 ## Next priorities — separate authorized phases
 
-1. **Preserve YouTube comments.** No collector is implemented. A yt-dlp proof of concept retrieved an IrishWeegee chapter comment; initially prioritize this author's timestamped comments. Preserve original text, comment IDs, author metadata, available timestamps and changes across observations. Comments can appear hours or days later: implement bounded periodic rechecks until the comment is found, then suitable refreshes for edits. Distinguish a successful search with no matching comment from extraction failure. Retrieval and refresh must operate independently of media acquisition and never disrupt daily downloads. Do not interpret comments into chapters.
+1. **Preserve YouTube comments.** The [offline persistence layer](COMMENTS.md) now preserves submitted yt-dlp comment objects, deduplicated snapshots, observation history, coverage/outcome evidence and stable author-ID sightings in a separate store. It has only been exercised against synthetic temporary test data. No live collector or refresh execution is implemented. The Mac mini investigation retrieved 121 comments for `20jeos2MJLY`, including one IrishWeegee comment; ignored evidence remains under `state/comment-investigation/`. Next, add a bounded manually invoked collector after review. Comments can appear hours or days later: eventual independent refresh should prioritize this author without disrupting media acquisition. Do not interpret comments into chapters.
 2. **Local admin interface.** Build a localhost-only browser interface showing recent acquisitions with titles, verified publication dates, YouTube IDs, acquisition timestamps and verification status, plus failures, retries and pending work. Include ambiguous-video Review queues with Keep, Skip and Clear Decision; retain reversible decision history and support search, filtering and past-decision review. Eventually show comment collection status. Direct YouTube-hosted thumbnail URLs are acceptable; no local image cache is necessary. No interface exists yet.
 3. **Historical backfill.** Work backward before October 26, 2026 toward the channel's earliest uploads around June 2021, using bounded date ranges. Reuse inventory, classifications and decisions; review uncertain historical material before downloading. Keep backfill independent from ongoing cron acquisition and never overwrite verified forward acquisitions. Historical publishing formats need evidence-based rules; no backfill workflow exists yet.
 
