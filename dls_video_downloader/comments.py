@@ -144,10 +144,13 @@ class CommentStore:
         self.close()
 
     def _publish(self, video_id, snapshot_hash, raw):
+        self._publish_bytes(self.root / video_id / "snapshots", f"{snapshot_hash}.json", raw)
+
+    @staticmethod
+    def _publish_bytes(directory, name, raw):
         """Publish complete bytes without replacing evidence; verify existing bytes."""
-        directory = self.root / video_id / "snapshots"
         directory.mkdir(parents=True, exist_ok=True)
-        final = directory / f"{snapshot_hash}.json"
+        final = directory / name
         if final.exists():
             if final.read_bytes() != raw:
                 raise ValueError("Existing comment snapshot is damaged; refusing replacement")
@@ -344,3 +347,34 @@ class CommentStore:
         if result.get("video_id") != video_id or result.get("format_version") != 1:
             raise ValueError("Unexpected comment snapshot identity or format")
         return result
+
+    def export_attempt(self, attempt_id):
+        """Publish an immutable portable collection record after catalog commit.
+
+        Repeat this offline if export failed; it never retrieves or records again.
+        Snapshot paths in the record are relative to the video's directory.
+        """
+        row = self.db.execute("SELECT * FROM collection_attempts WHERE attempt_id=?",
+                              (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError("Unknown comment collection attempt")
+        attempt = dict(row)
+        for field in ("tool", "configuration", "warnings", "coverage", "target_matches"):
+            attempt[field] = json.loads(attempt.pop(field + "_json"))
+        snapshot = None
+        if attempt["snapshot_hash"]:
+            self.load_snapshot(attempt["video_id"], attempt["snapshot_hash"])
+            relative = f"snapshots/{attempt['snapshot_hash']}.json"
+            path = self.root / attempt["video_id"] / relative
+            snapshot = {"path": relative, "sha256": attempt["snapshot_hash"],
+                        "size": path.stat().st_size, "format_version": 1}
+        order = [r[0] for r in self.db.execute(
+            "SELECT comment_id FROM attempt_comments WHERE attempt_id=? ORDER BY position",
+            (attempt_id,))]
+        record = {"format_version": 1, "asset_type": "comments",
+                  "source": {"service": "youtube", "video_id": attempt["video_id"]},
+                  "preservation_state": "saved" if snapshot else "no_snapshot",
+                  "snapshot": snapshot, "collection": attempt, "comment_order": order}
+        directory = self.root / attempt["video_id"] / "collections"
+        self._publish_bytes(directory, f"{attempt_id}.json", encoded(record))
+        return directory / f"{attempt_id}.json"

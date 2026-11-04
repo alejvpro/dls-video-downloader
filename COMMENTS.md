@@ -1,11 +1,57 @@
-# Offline comment preservation
+# Comment collection and preservation
 
 `dls_video_downloader.comments.CommentStore` stores **yt-dlp-extracted comment
-objects**, not raw YouTube API responses. This phase implements offline persistence
-only. No command, network retrieval, video importer integration, retry execution,
-or scheduling is installed. The existing media runner does not import this module.
-Tests use synthetic objects and disposable directories; the investigation's real
-comments have not been imported into an operational store.
+objects**, not raw YouTube API responses. An independent manual collector retrieves
+one explicit video's comments and submits them to this store. No background
+collection, retry execution, automatic refresh, or scheduling is installed. The
+existing media runner does not invoke comment collection. Offline tests use
+synthetic objects and disposable stores.
+
+## Manual single-video collection
+
+From the checkout:
+
+```sh
+/opt/homebrew/bin/python3 -B -m dls_video_downloader comments collect 20jeos2MJLY
+```
+
+The argument must be an 11-character YouTube video ID, not a URL or playlist.
+The video need not exist in the media inventory or have been downloaded. The
+command dispatches before opening the video database; the global `--db` setting
+does not affect it. `--store-root PATH` overrides the dedicated comment root for
+isolated use. The production default remains `state/comments/`.
+
+Defaults are 1,000 comments total, newest first, unlimited parent/reply/depth
+sub-limits within that total, one second between requests, a 30-second socket
+timeout, zero retries, and a 600-second subprocess deadline. `--max-comments N`
+accepts 1–1000; `--timeout-seconds N` accepts 1–600. Configuration uses yt-dlp's
+documented five-part `youtube:max_comments=1000,all,all,all,all;comment_sort=new`.
+The explicit executables are `/usr/local/bin/yt-dlp-new` and
+`/Users/alejandroveloz/.nvm/versions/node/v22.23.4/bin/node`; no shell initialization,
+ambient yt-dlp config, plugins, installation, or upgrades are used.
+
+Video/audio downloading and subtitle/thumbnail/metadata file writing are disabled.
+The full extraction JSON is held only in a bounded memory buffer (32 MiB); only
+comment objects and selected provenance are persisted. stderr is bounded at
+256 KiB, with at most 64 KiB of sanitized diagnostics retained. URLs and sensitive
+diagnostic lines are omitted; comment text and its source fields are unaffected.
+Output overflow, timeout, and interruption kill the process group, reap the
+parent, and record a failure or usable partial result. Truncated JSON fragments
+are never salvaged. A separate nonblocking `.collector.lock` prevents overlapping
+collectors for the same root; the subprocess inherits ownership until cleanup.
+No video acquisition lock is held and no media acquisition status is changed.
+
+CLI output is JSON with the attempt ID, retrieval state, coverage, counts, target
+matches, snapshot path/hash/size, portable collection-record path and catalog path.
+Exit codes: 0 for a preserved retrieval (including uncertain coverage) or explicit
+disabled status; 2 for partial/failed/invalid retrieval; 130 for interruption;
+75 for comment-collector overlap; 1 for storage/internal failure. Invalid CLI
+arguments exit 2 before retrieval. No rate-limit bypass or automatic retry occurs.
+
+Run the same command again only when another manual collection is desired.
+Identical comment objects reuse the snapshot while each invocation records a new
+attempt and portable record. Source timestamp estimates or likes may change and
+produce new evidence even when text is unchanged. No previous snapshot is replaced.
 
 ## API and layout
 
@@ -15,6 +61,7 @@ operational root is `state/comments/`, already covered by `/state/` in `.gitigno
 ```text
 state/comments/comments.sqlite3
 state/comments/<YouTubeID>/snapshots/<sha256>.json
+state/comments/<YouTubeID>/collections/<attempt-id>.json
 ```
 
 For example, a future caller can submit an already retrieved list:
@@ -144,6 +191,70 @@ matches from incomplete collections are still valid sightings. All authors'
 comments are preserved regardless of matching, and missing matches do not prove
 absence. This is identity presence tracking only.
 
+### Current collector coverage limits
+
+The manual collector never infers `complete` from exit status, returned count,
+or a matching displayed estimate. A normal result has outcome `uncertain` and
+retrieval state `returned_nonempty` or `returned_empty`. These separate successful
+retrieval from coverage certainty. Consequently the store's complete-success
+pointer can remain unset after a successful manual retrieval; inspect the attempt
+and its retrieval state instead.
+
+Reaching the configured cap, interrupted/looping/incomplete diagnostics, or a
+conflicting/null extracted count marks usable results partial. Nonzero exit,
+timeout, and interruption preserve a valid complete JSON document's usable
+comments as partial evidence, when available. Without usable JSON they record
+failure. Malformed comment objects are recorded as invalid by the store. Explicit
+disabled/turned-off diagnostics plus a null comment list establish `disabled`;
+a missing/null list alone does not. No missing match proves absence. YouTube may
+filter comments, omit replies, change counts, or return incomplete continuations.
+The collector does not claim exhaustive visibility into the site.
+
+### Portable collection records
+
+Snapshot format and catalog schema remain version 1. Each manual attempt also
+publishes an immutable `collections/<attempt-id>.json`. This small record carries
+source identity, asset type `comments`, collection/recording times, tool version,
+limits, warnings/errors, effective outcome and coverage, counts, matching author
+IDs and comments, and original comment order. Its snapshot reference contains a
+path relative to the video's directory, SHA-256, byte size, and format version.
+`preservation_state` distinguishes a saved snapshot from an attempt without one;
+preservation of bytes is separate from completeness of the retrieved comment set.
+
+These two JSON artifacts can be read with ordinary JSON tools without SQLite or
+write access to downloader databases. A future Archiver can ingest new comment
+assets independently of unchanged media. This is a local collection record, not
+a shared manifest framework or Archiver integration.
+
+Portable export follows catalog commit and uses the same immutable publication
+mechanism as snapshots. If export fails, the command reports the committed attempt
+ID. Repair the export offline without repeating retrieval:
+
+```python
+with CommentStore(dedicated_root) as store:
+    path = store.export_attempt(attempt_id)
+```
+
+Repeated export verifies/reuses existing bytes. Damaged records are refused rather
+than silently replaced. Failed attempts also have portable records, without a
+snapshot reference when no source data was preserved.
+
+### Controlled validation — November 4, 2026
+
+After all 137 offline tests passed, exactly one authorized live invocation collected
+`20jeos2MJLY` at 12:07 p.m. Pacific. It completed in about 56 seconds with exit 0,
+121 comments (69 top-level, 52 replies), no warnings/errors, and IrishWeegee comment
+`Ugx6U2-39QsqzNgc6Eh4AaABAg`. The configured Node 22 runtime was recognized.
+Outcome is `uncertain`, retrieval state `returned_nonempty`, cap not reached.
+
+Attempt `3e94c28cf42f4d7880999117ec6970d0` is recorded in the separate catalog and
+portable collection JSON. The immutable snapshot is 70,560 bytes with SHA-256
+`818b0d7de99be43ce87f70532a53c7099d1a40e4e5f55d3b2fdde56535c8aabf`.
+Both JSON artifacts were independently opened and the checksum verified without
+SQLite. These operational artifacts remain ignored under `state/comments/`.
+No second live collection was performed; repeat/deduplication testing used
+synthetic disposable data.
+
 ## Independent readers and future work
 
 `load_snapshot(video_id, snapshot_hash)` verifies the hash and returns the saved
@@ -154,8 +265,8 @@ No searchable content index, chapters, segment metadata, episode relationships,
 or comment summaries are created here. Indexer owns interpretation; Archiver owns
 long-term preservation, backup, and any future handoff.
 
-Next phases may add a bounded, manually invoked single-video collector and then
-independent retry/refresh execution. Neither is implemented. No production video
+Next phases may add independently tested retry/refresh policy and execution.
+Neither is implemented. No production video
 database, acquisition receipt, classifier, media lock, or cron configuration is
 used by this storage module. The explicit store root also makes tests independent
 of the operational comment tree.
@@ -164,4 +275,5 @@ Run the synthetic regression tests with:
 
 ```sh
 /opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comments.py -v
+/opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comment_collection.py -v
 ```

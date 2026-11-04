@@ -20,10 +20,23 @@ def iso_date(value):
         raise argparse.ArgumentTypeError("Expected YYYY-MM-DD") from exc
 
 
+def comment_video_id(value):
+    from .comments import VIDEO_ID
+    if not VIDEO_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError("Expected an 11-character YouTube video ID")
+    return value
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(Path(__file__).resolve().parent.parent / "state/inventory.sqlite3"))
     commands = parser.add_subparsers(dest="command", required=True)
+    comments = commands.add_parser("comments", help="Independent manual comment collection")
+    collect = comments.add_subparsers(dest="comment_command", required=True).add_parser("collect")
+    collect.add_argument("id", type=comment_video_id)
+    collect.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
+    collect.add_argument("--max-comments", type=int, default=1000)
+    collect.add_argument("--timeout-seconds", type=int, default=600)
     importer = commands.add_parser("import", help="Import local JSON only")
     importer.add_argument("--live")
     importer.add_argument("--videos")
@@ -62,6 +75,25 @@ def main(argv=None):
         command.add_argument("--json", action="store_true")
         command.add_argument("--details", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "comments":
+        if not 1 <= args.max_comments <= 1000 or not 1 <= args.timeout_seconds <= 600:
+            parser.error("Comment limit must be 1..1000; timeout must be 1..600 seconds")
+        # Dispatch before opening any video database or media error-log path.
+        from .comment_collection import collect, CommentBusy, safe_diagnostic
+        try:
+            result = collect(args.id, root=args.store_root, max_comments=args.max_comments,
+                             timeout=args.timeout_seconds)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return result["exit_code"]
+        except CommentBusy as exc:
+            print(safe_diagnostic(exc), file=sys.stderr)
+            return 75
+        except KeyboardInterrupt:
+            print("Comment collection interrupted", file=sys.stderr)
+            return 130
+        except Exception as exc:
+            print(f"Comment collection failed: {safe_diagnostic(exc)}", file=sys.stderr)
+            return 1
     if args.command == "import" and not any((args.live, args.videos, args.full, args.other)):
         parser.error("import requires at least one local input")
     readonly = args.command in ("status", "plan")

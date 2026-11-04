@@ -1,6 +1,6 @@
 # DLS Video Downloader
 
-This project inventories and acquires selected official Dan Le Batard Show YouTube videos. YouTube video IDs identify videos permanently; titles and dates do not. The inventory and selection planner work offline. Explicit acquisition and bounded recent channel discovery are implemented; cron scheduling is active. An independent [offline comment store](COMMENTS.md) preserves submitted comment collections; live comment retrieval, historical backfill, and Archiver integration remain future work. See [bounded runner usage and operational limits](RUNNER.md).
+This project inventories and acquires selected official Dan Le Batard Show YouTube videos. YouTube video IDs identify videos permanently; titles and dates do not. The inventory and selection planner work offline. Explicit acquisition and bounded recent channel discovery are implemented; cron scheduling is active. Independent [manual single-video comment collection and preservation](COMMENTS.md) is implemented; automatic comment refresh, historical backfill, and Archiver integration remain future work. See [bounded runner usage and operational limits](RUNNER.md).
 
 One manually invoked metadata-only validation enriched the October 26–28 daily shows. See [validation findings](METADATA-VALIDATION.md) for formats, runtime warnings, and verification. The acquisition and bounded discovery workflows are documented below.
 
@@ -125,4 +125,10 @@ Plan a browser interface bound to localhost on the Mac mini, using the existing 
 
 ### Comment preservation
 
-The independent [offline comment store](COMMENTS.md) preserves complete yt-dlp-extracted comment objects in content-addressed JSON snapshots and a separate SQLite history catalog. It retains exact text, identities, reply relationships, timestamp evidence, distinct payload/text hashes, collection outcomes and configurable author-presence sightings. Synthetic tests use disposable stores; no production comment import has been performed. Live comment collection and refresh remain unimplemented and must operate independently of media downloads. The future Indexer, not this downloader, will interpret comments into structured chapters.
+The independent [comment store and manual collector](COMMENTS.md) preserve complete yt-dlp-extracted comment objects in content-addressed JSON snapshots and a separate SQLite history catalog. They retain exact text, identities, reply relationships, timestamp evidence, distinct payload/text hashes, collection outcomes and configurable author-presence sightings. Collect one explicit video with:
+
+```sh
+/opt/homebrew/bin/python3 -B -m dls_video_downloader comments collect 20jeos2MJLY
+```
+
+Defaults: 1,000 comments, newest first, zero retries, 30-second socket timeout and 600-second process deadline. No media, captions or thumbnails are downloaded. `state/comments/` contains the catalog, snapshots and portable per-attempt JSON provenance. Repeat the same command manually to refresh; identical results reuse snapshots. A successful retrieval normally reports uncertain coverage, not exhaustive completeness. The command does not open the video inventory. Automatic refresh and comment scheduling remain unimplemented. The future Indexer, not this downloader, will interpret comments into structured chapters.

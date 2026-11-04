@@ -10,7 +10,7 @@ Existing checkpoints:
 - `139ca8dbf08d81647039a31b023fdbf8c5b4ef39`: unattended-operation safeguards.
 - `69ecd6ca0804872f897f7cafdfb1c29ce9c12bbc`: acquisition naming and active cron documentation.
 
-There is no Git remote. The offline suite currently contains 112 tests, including 30 synthetic comment-store tests.
+There is no Git remote. The offline suite currently contains 137 tests, including 30 comment-store and 25 manual-collector tests using disposable synthetic data and tiny local subprocesses.
 
 ## Architecture and operations
 
@@ -50,11 +50,22 @@ The downloader acquires media and preserves source observations without interpre
 
 ## Next priorities — separate authorized phases
 
-1. **Preserve YouTube comments.** The [offline persistence layer](COMMENTS.md) now preserves submitted yt-dlp comment objects, deduplicated snapshots, observation history, coverage/outcome evidence and stable author-ID sightings in a separate store. It has only been exercised against synthetic temporary test data. No live collector or refresh execution is implemented. The Mac mini investigation retrieved 121 comments for `20jeos2MJLY`, including one IrishWeegee comment; ignored evidence remains under `state/comment-investigation/`. Next, add a bounded manually invoked collector after review. Comments can appear hours or days later: eventual independent refresh should prioritize this author without disrupting media acquisition. Do not interpret comments into chapters.
+1. **Preserve YouTube comments.** The independent [manual collector and store](COMMENTS.md) support `comments collect VIDEO_ID`, with a 1,000-comment cap, newest-first sorting, zero retries, explicit runtimes, bounded pipes/timeouts and comment-only locking. Snapshots and schema remain version 1; immutable per-attempt JSON records make provenance and coverage portable without SQLite. Normal CLI retrieval remains coverage-uncertain; caps/failures never prove target absence. No refresh execution or comment scheduling is implemented. Next, develop/test independent bounded refresh policy after reviewing manual collection. Comments can appear hours or days later: refresh should prioritize stable IrishWeegee author-ID sightings without disrupting media acquisition. Do not interpret comments into chapters. The earlier Mac mini investigation retrieved 121 comments for `20jeos2MJLY`; ignored evidence remains under `state/comment-investigation/`.
 2. **Local admin interface.** Build a localhost-only browser interface showing recent acquisitions with titles, verified publication dates, YouTube IDs, acquisition timestamps and verification status, plus failures, retries and pending work. Include ambiguous-video Review queues with Keep, Skip and Clear Decision; retain reversible decision history and support search, filtering and past-decision review. Eventually show comment collection status. Direct YouTube-hosted thumbnail URLs are acceptable; no local image cache is necessary. No interface exists yet.
 3. **Historical backfill.** Work backward before October 26, 2026 toward the channel's earliest uploads around June 2021, using bounded date ranges. Reuse inventory, classifications and decisions; review uncertain historical material before downloading. Keep backfill independent from ongoing cron acquisition and never overwrite verified forward acquisitions. Historical publishing formats need evidence-based rules; no backfill workflow exists yet.
 
 Deferred: comment interpretation/chapter generation (Indexer), long-term drive replication (Archiver), possible cron-to-launchd migration, possible private GitHub remote, and refined classification informed by accumulated decisions.
+
+### Manual comment validation — November 4, 2026
+
+After 137 offline tests passed, one authorized `comments collect 20jeos2MJLY`
+invocation created the first operational comment collection: 121 comments,
+69 top-level and 52 replies, with one IrishWeegee match and no warnings/errors.
+The outcome correctly remains coverage-uncertain. Attempt
+`3e94c28cf42f4d7880999117ec6970d0`, its portable record and a verified 70,560-byte
+snapshot are under ignored `state/comments/`; see [validation details](COMMENTS.md).
+Snapshot/catalog schema versions remain unchanged. No automatic refresh or
+comment schedule has been activated.
 
 ## Development conventions
 
