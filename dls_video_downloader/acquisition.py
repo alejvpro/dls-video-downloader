@@ -11,6 +11,7 @@ import signal
 import uuid
 from contextlib import contextmanager
 
+from . import youtube_safety as safety
 from .classification import CHANNEL, DEFAULT_START, publication
 from .inventory import FIELDS, encoded, now, report
 from .operations import OperationBusy, retry_failure, retry_pending, retry_success, safe_text, write_log
@@ -33,6 +34,8 @@ def sha256(path):
 
 
 def run(args, log, timeout):
+    gate=safety.current()
+    request=gate.begin(Path(log).name) if safety.is_network(args) else None
     # A terminated yt-dlp must not leave its FFmpeg/Node children running after
     # the parent releases the operation lock.
     with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -47,11 +50,15 @@ def run(args, log, timeout):
                 pass
             _, stderr = process.communicate()
             write_log(log, stderr)
+            if request:gate.observe(stderr,component=safety.component('video'),operation=Path(log).name,observation_id=request)
             if isinstance(exc, subprocess.TimeoutExpired):
                 raise ValueError("External command timed out; partial output retained") from exc
             raise
     # Verbose merger evidence is useful; playback and other request URLs are not.
     write_log(log, stderr)
+    if request:
+        blocked=gate.observe(stderr,component=safety.component('video'),operation=Path(log).name,observation_id=request)
+        if blocked:raise safety.Blocked('shared_youtube_'+blocked['status']+': '+blocked['reason'])
     if process.returncode:
         errors = [line for line in safe_text(stderr).splitlines() if 'ERROR' in line]
         reason = errors[-1][:500] if errors else f"External command failed (exit {process.returncode})"
@@ -139,6 +146,7 @@ def operation_lock(root):
             _operation_fd = None
 
 
+@safety.scoped(lambda a:safety.state_from_db(a['db']),'video-acquisition')
 def acquire(db, video_id, start=DEFAULT_START, *, root=None, _lock_held=False,
             retry_base_minutes=60, retry_max_hours=24, _forward_only=False):
     if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
@@ -149,6 +157,7 @@ def acquire(db, video_id, start=DEFAULT_START, *, root=None, _lock_held=False,
     root = (root or PROJECT / "state" / "acquisitions").resolve()
     if not root.is_relative_to(PROJECT):
         raise ValueError("Acquisition output must remain inside the project")
+    safety.current().ensure('acquisition')
     root.mkdir(parents=True, exist_ok=True)
     def perform():
         verified = db.execute("SELECT 1 FROM acquisitions WHERE video_id=?", (video_id,)).fetchone()
@@ -157,6 +166,8 @@ def acquire(db, video_id, start=DEFAULT_START, *, root=None, _lock_held=False,
             raise ValueError(f"Retry deferred until {pending['next_retry']}: {pending['category']}")
         try:
             result = _acquire_locked(db, video_id, root, forward_start=start if _forward_only else None)
+        except safety.Blocked:
+            raise
         except (OSError, ValueError, KeyboardInterrupt) as exc:
             retry_failure(db, video_id, "acquisition", exc, base_minutes=retry_base_minutes, max_hours=retry_max_hours)
             raise

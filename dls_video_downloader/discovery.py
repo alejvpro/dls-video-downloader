@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import uuid
 
+from . import youtube_safety as safety
 from . import acquisition as media
 from .classification import CHANNEL, DEFAULT_START
 from .inventory import FIELDS, encoded, import_document, now, report
@@ -65,6 +66,7 @@ def enrichment_candidates(db, positions, items, verified, start, *, honor_retrie
     return preferred + [entry for entry in enrich if entry not in preferred], deferred
 
 
+@safety.scoped(lambda a:a['state'] or safety.state_from_db(a['db']),'video-runner')
 def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_limit=75,
              max_enrich=8, max_downloads=2, start=DEFAULT_START, only_id=None, state=None,
              stale_hours=72, retry_base_minutes=60, retry_max_hours=24):
@@ -80,8 +82,10 @@ def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_
     state = (state or media.PROJECT / "state").resolve()
     if not state.is_relative_to(media.PROJECT):
         raise ValueError("Workflow state must remain inside the project")
+    safety.current().ensure('video_run')
     try:
         with media.operation_lock(state / "acquisitions"):
+            safety.current().ensure('video_run')
             return _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                                     max_downloads, start, only_id, state, stale_hours,
                                     retry_base_minutes, retry_max_hours)
@@ -123,6 +127,7 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         event("start", mode=result["mode"], limits=result["limits"], only_id=only_id)
         for source, tab, limit in (("live", "streams", streams_limit), ("videos", "videos", videos_limit)):
             try:
+                safety.current().ensure('metadata')
                 document = json.loads(media.run(common + ["--flat-playlist", "--playlist-end", str(limit),
                     f"https://www.youtube.com/channel/{CHANNEL}/{tab}"], directory / f"{source}.stderr.log", 300))
                 entries = channel_entries(document, limit)
@@ -143,6 +148,10 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                 for position, item in enumerate(entries):
                     positions[item["id"]] = min(position, positions.get(item["id"], limit))
                 event("tab_imported", source=source, entries=len(entries), observations=imported["new_observations"])
+            except safety.Blocked as exc:
+                result.update(status='deferred',shared_block=str(exc))
+                result['deferred'].append({'operation':'youtube','reason':str(exc)})
+                return result
             except (ValueError, OSError) as exc:
                 failure(source, exc)
         items = {i["id"]: i for i in report(db, start)["items"]}
@@ -154,6 +163,7 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         failed_enrichment = set()
         for _, video_id in enrich[:max_enrich]:
             try:
+                safety.current().ensure('metadata')
                 document = json.loads(media.run(common + ["--no-playlist", "https://www.youtube.com/watch?v=" + video_id],
                     directory / f"{video_id}.stderr.log", 180))
                 if document.get("id") != video_id or document.get("channel_id") != CHANNEL or not document.get("live_status"):
@@ -164,6 +174,10 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                 retry_success(db, video_id, 'enrichment')
                 result["enriched"].append(video_id)
                 event("enriched", id=video_id, observations=imported["new_observations"])
+            except safety.Blocked as exc:
+                result.update(status='deferred',shared_block=str(exc))
+                result['deferred'].append({'operation':'youtube','reason':str(exc)})
+                return result
             except (ValueError, OSError) as exc:
                 failed_enrichment.add(video_id)
                 retry_failure(db, video_id, 'enrichment', exc, base_minutes=retry_base_minutes, max_hours=retry_max_hours)
@@ -207,6 +221,10 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                 retry_success(db, video_id, 'acquisition')
                 result["acquired"].append({"id": video_id, "status": outcome["status"], "sha256": outcome["sha256"]})
                 event("acquired", **result["acquired"][-1])
+            except safety.Blocked as exc:
+                result.update(status='deferred',shared_block=str(exc))
+                result['deferred'].append({'operation':'youtube','reason':str(exc)})
+                return result
             except (ValueError, OSError) as exc:
                 if not retry_pending(db, video_id, 'acquisition'):
                     retry_failure(db, video_id, 'acquisition', exc, base_minutes=retry_base_minutes, max_hours=retry_max_hours)

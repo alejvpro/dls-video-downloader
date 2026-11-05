@@ -698,3 +698,21 @@ Inspect the latest phase reports and artifact references, not only overall exit
 status. Immutable snapshots, portable collection records and catalog history remain
 independent assets. Future caption preservation joins the cycle as another phase;
 no caption collector, schema or interpretation/indexing is implemented.
+
+## Independent caption phase (offline implementation)
+
+[Caption preservation](CAPTIONS.md) now has its own exact-byte JSON3/VTT store,
+portable observations, retry policy and opt-in supplemental phase. It does not
+change comment selection, confirmation, backoff or the publication +15d cutoff.
+Captions follow completion-observation timing rather than that comment window.
+Cycle order remains discovery, comments, then captions when explicitly enabled.
+Installed cron commands omit `--captions`; unattended caption work is not enabled.
+
+## Shared YouTube blocking supersedes local cooldown admission
+
+[Shared safety](YOUTUBE-SAFETY.md) now gates comment collection and all other
+YouTube workflows. Explicit bot challenges default to 24 hours; bare 403 and
+ordinary technical failures do not globally block. Expiry requires authorized
+coordinated recovery. Existing local evidence remains intact; comment cutoff,
+IrishWeegee presence and confirmation rules are unchanged. Plans distinguish
+policy-due work deferred by safety. All six DLS cron jobs remain paused.

@@ -8,6 +8,7 @@ import sqlite3
 import time
 from zoneinfo import ZoneInfo
 
+from . import youtube_safety as safety
 from . import acquisition as media
 from .classification import CHANNEL, DEFAULT_START
 from .discovery import compact, metadata_command, channel_entries
@@ -31,6 +32,7 @@ def next_video_run(now):
                 return slot.astimezone(timezone.utc)
 
 
+@safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'morning-discovery')
 def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_requests=20,
              runtime_seconds=180, start=DEFAULT_START, clock=None, monotonic=None, deadline=None):
     """Explicit metadata-writing command; tests must supply disposable paths.
@@ -52,11 +54,15 @@ def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_r
                          'runtime_seconds': runtime_seconds},
               'next_video_run': slot.isoformat(), 'new_ids': [], 'encountered': {},
               'enriched': [], 'deferred': [], 'failures': [], 'warnings': [], 'status': {},
-              'exit_code': 0, 'stop_reason': None, 'status_checks': {}}
+              'exit_code': 0, 'stop_reason': None, 'status_checks': {},
+              'forward_coverage': {'complete':False,'scope':'not_started'}}
     guard_slot = next_video_run(now - timedelta(seconds=60))
     if (guard_slot - now).total_seconds() <= runtime_seconds + 60:
         result['stop_reason'] = 'video_cron_imminent'
         return result
+    try:safety.current().ensure('morning_discovery')
+    except safety.Blocked as exc:
+        result.update(stop_reason=str(exc),exit_code=75);return result
     state = Path(inventory_path).resolve().parent
     phase_deadline = monotonic() + runtime_seconds
     if deadline is not None:
@@ -94,6 +100,7 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
         if remaining < 5:
             result['stop_reason'] = 'runtime_or_video_cron_budget'
             return None
+        safety.current().ensure('metadata')
         result['metadata_requests'] += 1
         if '--no-playlist' in args:
             result['attempted'].append(args[-1].split('=')[-1])
@@ -101,13 +108,16 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
 
     def failure(operation, exc, video=None):
         message = safe_text(str(exc))[:1000]
+        if isinstance(exc,safety.Blocked):
+            result.update(stop_reason=str(exc),exit_code=75);return
         result['failures'].append({'operation': operation, 'id': video, 'error': message})
         result['exit_code'] = 2
         if video is not None:
             forward.failed(retry,video,clock(),message)
-        if re.search(r'(?i)429|too many requests|rate.?limit|confirm.*bot|HTTP Error (?:402|403)', message):
+        if safety.classify(message):
             result['stop_reason'] = 'youtube_blocking'
-            retry['cooldown_until'] = (clock()+forward.BLOCK_DELAY).isoformat()
+            safety.current().observe(message,component='morning-discovery',operation=operation,now=clock())
+            retry['cooldown_until'] = safety.retry_time(message,clock(),safety.classify(message)).isoformat()
 
     try:
         for source, tab, limit in (('live', 'streams', streams), ('videos', 'videos', videos)):

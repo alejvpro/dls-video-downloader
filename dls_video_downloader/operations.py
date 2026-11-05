@@ -205,7 +205,7 @@ def run_record(db, state, result):
     result['started_at'] = started
     try:
         yield
-        result['status'] = 'partial_failure' if result['failures'] else 'success'
+        result['status'] = 'deferred' if result.get('shared_block') else 'partial_failure' if result['failures'] else 'success'
     except KeyboardInterrupt:
         result['status'] = 'interrupted'
         raise

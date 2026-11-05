@@ -8,6 +8,7 @@ import io
 from contextlib import redirect_stdout, nullcontext
 from pathlib import Path
 
+from . import youtube_safety as safety
 from .classification import DEFAULT_START
 from .inventory import connect, decide, import_file, reclassify, report, seed
 from .operations import OperationBusy, cleanup_staging, runtime_report, fatal_diagnostic, write_log
@@ -31,6 +32,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(Path(__file__).resolve().parent.parent / "state/inventory.sqlite3"))
     commands = parser.add_subparsers(dest="command", required=True)
+    youtube=commands.add_parser('youtube-safety',help='Read-only shared blocking status and explicitly authorized recovery')
+    youtube_commands=youtube.add_subparsers(dest='safety_command',required=True)
+    for name in ('status','events','import-legacy','review-events','recover'):
+        command=youtube_commands.add_parser(name)
+        command.add_argument('--json',action='store_true')
+        if name not in ('status','events'):command.add_argument('--execute',action='store_true')
+        if name=='events':command.add_argument('--limit',type=int,default=50)
+        if name=='recover':
+            command.add_argument('id',type=comment_video_id)
+            command.add_argument('--authorize',action='store_true')
+            command.add_argument('--reviewed',action='store_true')
     comments = commands.add_parser("comments", help="Independent comment collection and read-only planning")
     comment_commands = comments.add_subparsers(dest="comment_command", required=True)
     comment_plan = comment_commands.add_parser("plan", help="Read-only inventory comment refresh plan")
@@ -52,6 +64,18 @@ def main(argv=None):
     collect.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
     collect.add_argument("--max-comments", type=int, default=1000)
     collect.add_argument("--timeout-seconds", type=int, default=600)
+    captions = commands.add_parser("captions", help="Independent English caption preservation")
+    caption_commands=captions.add_subparsers(dest="caption_command",required=True)
+    for name in ('plan','run','collect'):
+        command=caption_commands.add_parser(name)
+        command.add_argument('--store-root',type=Path,default=Path(__file__).resolve().parent.parent/'state/captions')
+        command.add_argument('--json',action='store_true')
+        if name=='collect':command.add_argument('id',type=comment_video_id)
+        if name!='plan':command.add_argument('--runtime-seconds',type=int,default=180)
+        if name=='run':
+            command.add_argument('--execute',action='store_true')
+            command.add_argument('--max-videos',type=int,default=1)
+        if name!='collect':command.add_argument('--start-date',type=iso_date,default=DEFAULT_START)
     morning = commands.add_parser("discover-morning", help="Bounded metadata-only morning discovery/status; writes inventory")
     morning.add_argument("--streams-limit", type=int, default=10)
     morning.add_argument("--videos-limit", type=int, default=0)
@@ -59,8 +83,12 @@ def main(argv=None):
     morning.add_argument("--runtime-seconds", type=int, default=180)
     morning.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
     morning.add_argument("--json", action="store_true")
-    cycle = commands.add_parser("cycle", help="Supplemental discovery/comments; read-only unless --execute")
+    cycle = commands.add_parser("cycle", help="Supplemental discovery/comments/opt-in captions; read-only unless --execute")
     cycle.add_argument("--execute", action="store_true")
+    cycle.add_argument('--captions',action='store_true',help='Explicitly enable caption execution; requires --execute')
+    cycle.add_argument('--caption-root',type=Path)
+    cycle.add_argument('--caption-seconds',type=int,default=180)
+    cycle.add_argument('--max-caption-videos',type=int,default=1)
     cycle.add_argument("--discover", action="store_true", help="Also authorize metadata discovery; requires --execute")
     cycle.add_argument("--json", action="store_true")
     cycle.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
@@ -111,6 +139,60 @@ def main(argv=None):
         command.add_argument("--json", action="store_true")
         command.add_argument("--details", action="store_true")
     args = parser.parse_args(argv)
+    if args.command=='youtube-safety':
+        state=safety.Safety(Path(args.db).resolve().parent)
+        try:
+            if args.safety_command=='status':result=state.status()
+            elif args.safety_command=='events':
+                if not 1<=args.limit<=500:raise ValueError('Event limit must be 1..500')
+                result=[json.loads(p.read_bytes()) for p in sorted((state.root/'events').glob('[0-9]'*12+'-*.json'))[-args.limit:]]
+            elif not args.execute:result=dict(mode='read-only',safety=state.status(),reason='requires --execute; recovery also requires --authorize')
+            elif args.safety_command=='import-legacy':result=state.import_legacy()
+            elif args.safety_command=='review-events':result=state.review_event()
+            else:
+                from .youtube_recovery import recover
+                result=recover(state,args.id,authorized=args.authorize,reviewed=args.reviewed)
+            print(json.dumps(result,indent=2) if args.json else str(result));return 0
+        except safety.Blocked as exc:print(str(exc),file=sys.stderr);return 75
+        except Exception as exc:
+            from .operations import safe_text
+            print('Shared YouTube safety error: '+safe_text(exc),file=sys.stderr);return 1
+    # No network command may initialize/migrate inventory before admission.
+    if args.command in ('discover','run','download'):
+        from .youtube_safety import Safety,Blocked
+        try:Safety(Path(args.db).resolve().parent).ensure(args.command)
+        except Blocked as exc:print(str(exc),file=sys.stderr);return 75
+    if args.command == 'captions':
+        from . import caption_planning, caption_collection, caption_runner
+        from .comment_collection import safe_diagnostic
+        from datetime import datetime, timezone
+        try:
+            if args.caption_command=='plan':
+                result=caption_planning.plan(args.db,args.store_root,now=datetime.now(timezone.utc),start=args.start_date,
+                    cooldown_until=caption_runner.cooldown(args.db,args.store_root))
+                renderer=caption_planning.render
+            elif args.caption_command=='run':
+                result=caption_runner.run(args.db,args.store_root,execute=args.execute,max_videos=args.max_videos,
+                    runtime_seconds=args.runtime_seconds,start=args.start_date)
+                renderer=caption_runner.render
+            else:
+                # Manual collection is explicit, but still yields to acquisition
+                # and shared blocking state before every network request.
+                from .comment_runner import video_busy, Deferred
+                def preflight():
+                    until=caption_runner.cooldown(args.db,args.store_root)
+                    if until and until>datetime.now(timezone.utc):raise Deferred('collector_cooldown')
+                    if video_busy(Path(args.db).resolve().parent/'acquisitions/.acquisition.lock'):raise Deferred('video_acquisition_active')
+                with safety.scope(Path(args.db).resolve().parent,'manual-captions'):
+                    result=caption_collection.collect(args.id,root=args.store_root,timeout=args.runtime_seconds,before_collect=preflight)
+                renderer=lambda value: f"{value['video_id']} | {value['outcome']} | {value['collection_record']}"
+            print(json.dumps(result,ensure_ascii=False,indent=2) if args.json else renderer(result))
+            return result.get('exit_code',0)
+        except KeyboardInterrupt:return 130
+        except safety.Blocked as exc:
+            print(str(exc),file=sys.stderr);return 75
+        except Exception as exc:
+            print('Caption operation failed: '+safe_diagnostic(exc),file=sys.stderr);return 1
     if args.command == "cycle":
         if args.discover and not args.execute:
             parser.error("--discover requires --execute; default cycle is read-only")
@@ -121,12 +203,16 @@ def main(argv=None):
                          runtime_seconds=args.runtime_seconds,discovery_seconds=args.discovery_seconds,
                          comment_seconds=args.comment_seconds,streams_limit=args.streams_limit,
                          videos_limit=args.videos_limit,max_metadata_requests=args.max_metadata_requests,
-                         max_videos=args.max_videos,max_comments=args.max_comments,start=args.start_date)
+                         max_videos=args.max_videos,max_comments=args.max_comments,start=args.start_date,
+                         captions=args.captions,caption_root=args.caption_root,caption_seconds=args.caption_seconds,
+                         max_caption_videos=args.max_caption_videos)
             print(json.dumps(result,ensure_ascii=False,indent=2) if args.json else render(result))
             return result["exit_code"]
         except KeyboardInterrupt:
             print("Supplemental cycle interrupted",file=sys.stderr)
             return 130
+        except safety.Blocked as exc:
+            print(str(exc),file=sys.stderr);return 75
         except Exception as exc:
             print(f"Supplemental cycle failed: {safe_diagnostic(exc)}",file=sys.stderr)
             return 1
@@ -144,6 +230,8 @@ def main(argv=None):
         except KeyboardInterrupt:
             print("Morning discovery interrupted", file=sys.stderr)
             return 130
+        except safety.Blocked as exc:
+            print(str(exc),file=sys.stderr);return 75
         except Exception as exc:
             print(f"Morning discovery failed: {safe_text(str(exc))}", file=sys.stderr)
             return 1
@@ -158,6 +246,8 @@ def main(argv=None):
         except KeyboardInterrupt:
             print("Comment runner interrupted", file=sys.stderr)
             return 130
+        except safety.Blocked as exc:
+            print(str(exc),file=sys.stderr);return 75
         except Exception as exc:
             print(f"Comment runner failed: {safe_diagnostic(exc)}", file=sys.stderr)
             return 1
@@ -169,6 +259,8 @@ def main(argv=None):
                           start=args.start_date)
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result, include_excluded=args.details))
             return 0
+        except safety.Blocked as exc:
+            print(str(exc),file=sys.stderr);return 75
         except Exception as exc:
             print(f"Comment planning failed: {exc}", file=sys.stderr)
             return 1
@@ -178,8 +270,9 @@ def main(argv=None):
         # Dispatch before opening any video database or media error-log path.
         from .comment_collection import collect, CommentBusy, safe_diagnostic
         try:
-            result = collect(args.id, root=args.store_root, max_comments=args.max_comments,
-                             timeout=args.timeout_seconds)
+            with safety.scope(Path(args.db).resolve().parent,'manual-comments'):
+                result = collect(args.id, root=args.store_root, max_comments=args.max_comments,
+                                 timeout=args.timeout_seconds)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return result["exit_code"]
         except CommentBusy as exc:
@@ -188,6 +281,8 @@ def main(argv=None):
         except KeyboardInterrupt:
             print("Comment collection interrupted", file=sys.stderr)
             return 130
+        except safety.Blocked as exc:
+            print(str(exc),file=sys.stderr);return 75
         except Exception as exc:
             print(f"Comment collection failed: {safe_diagnostic(exc)}", file=sys.stderr)
             return 1
@@ -231,6 +326,7 @@ def main(argv=None):
                                       retry_base_minutes=args.retry_base_minutes, retry_max_hours=args.retry_max_hours)
                 if not args.quiet:
                     print(json.dumps(result, indent=2))
+                if result.get('shared_block'):return 75
                 if result["failures"]:
                     if args.quiet:
                         print(f"{result['finished_at']} partial_failure: {len(result['failures'])} failures; {result['log']}", file=sys.stderr)

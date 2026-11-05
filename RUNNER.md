@@ -1,3 +1,8 @@
+> Current safety status: all six DLS cron commands remain commented out. Shared
+> YouTube admission/recovery is implemented offline; no recovery or cron
+> restoration has been run. Historical activation schedules below are not active.
+> See [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md) for state, inspection and recovery.
+
 # Scheduled forward acquisition runner
 
 Cron was activated on October 29, 2026 at 1:01 a.m. Pacific with one labeled entry and four daily checks. Use the same command for a manual run:
@@ -356,3 +361,37 @@ not display its contents. Prefer removing only the supplemental block over a ful
 restore that could discard later unrelated edits. No new daemon/wrapper, caption
 collector, backfill, UI, shared archive manifest or cross-project integration was
 installed. Future captions will be an independent asset/phase within this cycle.
+
+## Opt-in captions — offline-tested, not activated
+
+The supplemental cycle now plans an independent caption phase after comments.
+Default `cycle --json` remains read-only. Existing installed `cycle --execute`
+and `cycle --execute --discover` commands **do not collect captions**. Future
+supervised execution must explicitly add `--captions`; this milestone does not
+change any installed cron line. See [CAPTIONS.md](CAPTIONS.md) for commands, source
+identity, immutable formats, retry/confirmation rules and rollout boundaries.
+
+Caption defaults are one video, 180 seconds, two source formats, and the existing
+shared 600-second overall deadline. `--max-caption-videos` permits 1–2;
+`--caption-seconds` permits 30–300; `--caption-root` selects independent state.
+Comments run first without reserving time for captions. Remaining time, cooldowns,
+fresh eligibility and acquisition contention are rechecked before requests. All
+three phases retain independent outcomes and source histories. The media runner,
+its acquisition lock semantics and its cron commands remain unchanged.
+
+Inspect the existing supplemental latest report, the separate caption runner
+latest report, portable caption collection JSON, and read-only caption plans.
+Do not infer transcription completeness from operational success or completion of
+monitoring. Removing the opt-in caption flag later disables only caption work;
+there is no separate caption cron job or scheduler to manage.
+
+## Shared YouTube safety
+
+Acquisition remains independent, but now shares network blocking with metadata,
+comments and captions. The guard runs before video CLI inventory initialization
+and before each network subprocess; global deferral does not change selection,
+398+251 formats, manifests or local asset eligibility. Already admitted transfers
+are not destructively interrupted. Expired cooldown requires a separately
+approved coordinated metadata probe, never automatic per-job probes.
+Read `youtube-safety status --json` and the immutable event journal; follow the
+[shared operational guide](YOUTUBE-SAFETY.md). Keep cron paused through review.

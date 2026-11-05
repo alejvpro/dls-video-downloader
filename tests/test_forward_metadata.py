@@ -129,7 +129,7 @@ class ForwardTests(unittest.TestCase):
         self.assertFalse(first['forward_coverage']['complete'])
         self.calls=[];self.now+=timedelta(hours=1)
         next_cycle=self.invoke();self.assertEqual(self.calls,[])
-        self.assertEqual(next_cycle['stop_reason'],'metadata_cooldown')
+        self.assertIn('shared_youtube_',next_cycle['stop_reason'])
         self.assertFalse(next_cycle['forward_coverage']['complete'])
 
     def test_default_emergency_bound_handles_abnormally_large_scope(self):

@@ -1,23 +1,21 @@
 """Independent bounded comment orchestration; dry-run unless explicitly enabled."""
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 import fcntl
 import json
 import math
 import os
 from pathlib import Path
-import re
 import tempfile
 import time
 import uuid
 
+from . import youtube_safety as safety
 from .comment_collection import collect, CommentBusy, DEFAULT_ROOT, PROJECT, safe_diagnostic
 from .comment_planning import plan, instant
 from .classification import DEFAULT_START
 
 MIN_SECONDS = 30
-COOLDOWN = timedelta(hours=6)
 REPORT_LIMIT = 256 * 1024
 
 
@@ -87,20 +85,10 @@ def blocking_evidence(result, now):
     coverage = result.get('coverage', {})
     text = '\n'.join([str(coverage.get('diagnostics', '')), str(result.get('error') or ''),
                       *map(str, result.get('warnings', []))])
-    pattern = r"(?i)(?:\b429\b|\b402\b|too many requests|rate[ -]?limit|sign in to confirm.*(?:bot|human)|ip.*blocked|access denied|HTTP Error 403|request.*blocked)"
-    if not re.search(pattern, text):
-        return None
-    delay = COOLDOWN
-    retry = re.search(r'(?im)^\s*Retry-After:\s*([^\r\n]+)', text)
-    if retry:
-        try:
-            value = retry.group(1).strip()
-            seconds = int(value) if value.isdigit() else (instant(parsedate_to_datetime(value)) - now).total_seconds()
-            if seconds > 0:
-                delay = max(COOLDOWN, timedelta(seconds=seconds))
-        except (ValueError, TypeError, OverflowError):
-            pass
-    return {'version': 1, 'observed_at': now.isoformat(), 'until': (now + delay).isoformat(),
+    category=safety.classify(text)
+    if not category:return None
+    until=safety.retry_time(text,now,category)
+    return {'version': 1, 'observed_at': now.isoformat(), 'until': until.isoformat(),
             'reason': 'extractor_rate_limit_or_block', 'attempt_id': result.get('attempt_id'),
             'diagnostic': safe_diagnostic(text)[:4000]}
 
@@ -120,6 +108,7 @@ def _summary(item):
         'hard_cutoff': item['refresh']['deadline_at'], 'next_due_at': item['refresh']['next_due_at']}
 
 
+@safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'comment-runner')
 def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
         max_comments=1000, runtime_seconds=600, start=DEFAULT_START,
         clock=None, monotonic=None, acquisition_lock=None, deadline=None):
@@ -141,8 +130,10 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
     directory = root / 'runner'
     media_lock = acquisition_lock or PROJECT / 'state/acquisitions/.acquisition.lock'
     def current_plan():
-        return plan(inventory_path, root, now=instant(clock()), start=start,
+        value=plan(inventory_path, root, now=instant(clock()), start=start,
                     cooldown_until=read_cooldown(directory))
+        value['youtube_safety']=safety.current().status(clock())
+        return value
     initial = current_plan()  # Fail before any writes on invalid input.
     initial_cooldown = read_cooldown(directory)
     by_id = {i['id']: i for i in initial['items']}
@@ -156,6 +147,11 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
               'not_due_count': sum(i['eligible'] and not i['due'] for i in initial['items']),
               'cooldown_until': initial_cooldown.isoformat() if initial_cooldown else None,
               'exit_code': 0, 'stop_reason': 'collector_cooldown' if initial_cooldown and initial_cooldown > instant(initial['evaluated_at']) else None}
+    shared=safety.current().status(clock());result['youtube_safety']=shared
+    result['blocked_due_count']=len(initial.get('deferred_due_ids',[]))
+    if not shared['network_allowed']:
+        result.update(stop_reason='shared_youtube_'+shared['status'],exit_code=75 if execute else 0)
+        return result
     if not execute:
         return result
     try:
@@ -165,6 +161,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
                     work = {'id': video_id, 'status': 'deferred', 'reason': None}
                     result['work'].append(work)
                     def preflight():
+                        try:safety.current().ensure('comment_collection')
+                        except safety.Blocked as exc:raise Deferred(str(exc)) from exc
                         fresh = current_plan()
                         item = next(i for i in fresh['items'] if i['id'] == video_id)
                         if not item['due']:
@@ -211,6 +209,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
                                        'collector_cooldown', 'cooldown_exceeds_window'):
                             result['stop_reason'] = str(exc)
                             break
+                    except safety.Blocked as exc:
+                        work['reason']=str(exc);result.update(stop_reason=str(exc),exit_code=75);break
                     except CommentBusy as exc:
                         work.update(reason=safe_diagnostic(exc))
                         result.update(stop_reason='comment_collector_busy', exit_code=75)

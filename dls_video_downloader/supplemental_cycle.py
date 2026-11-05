@@ -7,7 +7,8 @@ from pathlib import Path
 import sqlite3
 import time
 
-from . import comment_runner, morning_discovery, forward_metadata
+from . import youtube_safety as safety
+from . import comment_runner, morning_discovery, forward_metadata, caption_planning, caption_runner
 from .classification import DEFAULT_START
 from .comment_collection import DEFAULT_ROOT, CommentBusy, safe_diagnostic
 from .comment_planning import plan, instant
@@ -33,20 +34,24 @@ def _busy(exc):
     return isinstance(exc, sqlite3.OperationalError) and any(s in str(exc).lower() for s in ('locked', 'busy'))
 
 
+@safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'supplemental-cycle')
 def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
         runtime_seconds=600, discovery_seconds=180, comment_seconds=600,
         streams_limit=10, videos_limit=0, max_metadata_requests=20, max_videos=2,
-        max_comments=1000, start=DEFAULT_START, clock=None, monotonic=None):
+        max_comments=1000, start=DEFAULT_START, clock=None, monotonic=None,
+        captions=False, caption_root=None, caption_seconds=180, max_caption_videos=1):
     """No execution without explicit intent. All external work is delegated.
 
-    Phase mapping is intentionally extensible by another named phase, not a
-    caption collector/schema, preservation manifest or persistent queue.
+    Discovery, comments and opt-in captions retain independent asset histories.
+    This is not a preservation manifest or persistent queue.
     """
+    if captions and not execute:
+        raise ValueError('--captions requires --execute; planning never retrieves captions')
     if discover and not execute:
         raise ValueError('--discover requires --execute; default planning never contacts YouTube')
     bounds = ((runtime_seconds,30,600),(discovery_seconds,30,180),(comment_seconds,30,600),
               (streams_limit,1,25),(videos_limit,0,25),(max_metadata_requests,1,100),
-              (max_videos,1,10),(max_comments,1,1000))
+              (max_videos,1,10),(max_comments,1,1000),(caption_seconds,30,300),(max_caption_videos,1,2))
     if any(type(v) is not int or not lo <= v <= hi for v,lo,hi in bounds):
         raise ValueError('Invalid cycle limits; see cycle --help')
     start = date.fromisoformat(start).isoformat()
@@ -58,19 +63,34 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
     inventory_path = Path(inventory_path).resolve()
     if root == inventory_path.parent or root.is_relative_to(inventory_path.parent / 'acquisitions'):
         raise ValueError('Comment root must be independent from inventory/acquisitions')
+    caption_root=Path(caption_root).resolve() if caption_root is not None else inventory_path.parent/'captions'
+    if caption_root==inventory_path.parent or caption_root.is_relative_to(inventory_path.parent/'acquisitions') or caption_root.is_relative_to(root) or root.is_relative_to(caption_root):
+        raise ValueError('Caption root must be independent of inventory, media and comments')
     directory = inventory_path.parent / 'supplemental'
     result = dict(mode='discovery-execute' if discover else 'inventory-execute' if execute else 'plan',
                   started_at=instant(clock()).isoformat(), fresh_youtube_status=False,
                   limits=dict(runtime_seconds=runtime_seconds, discovery_seconds=discovery_seconds,
                               comment_seconds=comment_seconds, max_videos=max_videos,
                               max_comments=max_comments, streams=streams_limit, videos=videos_limit,
-                              max_metadata_requests=max_metadata_requests), phases={}, exit_code=0, outcome='planned')
+                              max_metadata_requests=max_metadata_requests, captions_enabled=captions,
+                              caption_seconds=caption_seconds,max_caption_videos=max_caption_videos), phases={}, exit_code=0, outcome='planned')
     def shared_cooldown():
         comment_until = comment_runner.read_cooldown(root/'runner')
         metadata_until = forward_metadata.read_state(inventory_path.parent/'morning').get('cooldown_until')
-        values = [v for v in (comment_until, instant(metadata_until) if metadata_until else None) if v is not None]
+        caption_until=comment_runner.read_cooldown(caption_root/'runner')
+        values = [v for v in (comment_until,caption_until, instant(metadata_until) if metadata_until else None) if v is not None]
         return max(values,default=None)
 
+    try:shared=safety.current().status(clock())
+    except safety.Blocked as exc:
+        result.update(outcome='failed',exit_code=75,reason=str(exc))
+        result['phases']={name:_phase('deferred',str(exc)) for name in ('discovery','comments','captions')}
+        return result
+    result['youtube_safety']=shared
+    if execute and not shared['network_allowed']:
+        result.update(outcome='deferred',exit_code=75,reason='shared_youtube_'+shared['status'])
+        result['phases']={name:_phase('deferred' if requested else 'not_requested','shared_youtube_'+shared['status'],collection_attempts=0) for name,requested in [('discovery',discover),('comments',True),('captions',captions)]}
+        return result
     if not execute:
         cooldown = shared_cooldown()
         snapshot = plan(inventory_path, root, now=instant(clock()), start=start, cooldown_until=cooldown)
@@ -81,6 +101,18 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
                                               due_count=len(snapshot['due_ids']), plan=snapshot,
                                               budget_seconds=min(comment_seconds,runtime_seconds),
                                               collection_attempts=0,duration_seconds=max(0,monotonic()-started))
+        try:
+            result['phases']['captions']=_phase('planned','execution requires --execute --captions',
+                plan=caption_planning.plan(inventory_path,caption_root,now=clock(),start=start,cooldown_until=cooldown),
+                collection_attempts=0,budget_seconds=0,duration_seconds=0)
+        except Exception as exc:
+            result['phases']['captions']=_phase('failed','caption_plan_error',error=safe_diagnostic(exc))
+            result['exit_code']=2
+        if not shared['network_allowed']:
+            for name in ('comments','captions'):
+                phase=result['phases'][name];phase['reason']='shared_youtube_'+shared['status']
+                if 'plan' in phase:
+                    phase['plan'].setdefault('deferred_due_ids',phase['plan']['due_ids']);phase['plan']['due_ids']=[]
         result['finished_at'] = instant(clock()).isoformat()
         return result
 
@@ -106,6 +138,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
             stop = None
             phase_start = monotonic()
             try:
+                if not safety.current().status(clock())['network_allowed']:
+                    stop='shared_youtube_block'
                 cooldown = shared_cooldown()
                 if cooldown and cooldown > instant(clock()):
                     stop = 'collector_cooldown'
@@ -173,6 +207,7 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
                 discovery_phase.setdefault('metadata_requests',None if discovery_phase['outcome']=='failed' else 0)
                 phase_start = monotonic()
                 budget = min(comment_seconds, math.floor(deadline-phase_start))
+                if not stop and not safety.current().status(clock())['network_allowed']:stop='shared_youtube_block'
                 if stop or budget < 30:
                     result['phases']['comments'] = _phase('deferred',stop or 'insufficient_remaining_runtime',budget_seconds=max(0,budget))
                 else:
@@ -210,14 +245,57 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
             except Exception as exc:
                 result['phases'].setdefault('discovery',_phase('deferred' if discover else 'not_requested','safety_state_error'))
                 result['phases']['comments']=_phase('failed','safety_state_error',error=safe_diagnostic(exc))
+            # Captions are opt-in even on existing --execute cron commands.
+            caption_started=monotonic()
+            budget=min(caption_seconds,math.floor(deadline-caption_started))
+            comment_phase=result['phases'].get('comments',{})
+            comment_stop=comment_phase.get('result',{}).get('stop_reason')
+            unsafe=('shared_youtube_block' if not safety.current().status(clock())['network_allowed'] else stop) or ('interrupted' if result['exit_code']==130 else None)
+            if comment_stop in ('collector_cooldown','extractor_rate_limit_or_block','video_acquisition_active','runner_error','insufficient_remaining_runtime'):
+                unsafe=comment_stop
+            if comment_phase.get('reason') in ('safety_state_error','comment_error'):
+                unsafe='comment_safety_error'
+            if not captions:
+                result['phases']['captions']=_phase('not_requested','requires explicit --captions',collection_attempts=0)
+            elif unsafe or budget<30:
+                result['phases']['captions']=_phase('deferred',unsafe or 'insufficient_remaining_runtime',collection_attempts=0)
+            else:
+                try:
+                    cap=caption_runner.run(inventory_path,caption_root,execute=True,max_videos=max_caption_videos,
+                        runtime_seconds=budget,start=start,clock=clock,monotonic=monotonic,deadline=deadline)
+                    work=cap['work'];succeeded=sum(w['status']=='completed' for w in work)
+                    failed=sum(w['status']=='failed' for w in work)
+                    state=('partially_successful' if succeeded or any(w.get('outcome')=='partial' for w in work) else 'failed') if failed else ('successful' if succeeded else 'deferred' if cap['stop_reason'] else 'skipped')
+                    if cap['exit_code']==130:result['exit_code']=130
+                    result['phases']['captions']=_phase(state,cap['stop_reason'],result=cap,
+                        collection_attempts=sum(bool(w.get('attempt_id')) for w in work),succeeded=succeeded,failed=failed,
+                        deferred=sum(w['status']=='deferred' for w in work),incomplete=sum(not w.get('complete') for w in work if w.get('attempt_id')))
+                except KeyboardInterrupt:
+                    result['phases']['captions']=_phase('failed','interrupted');result['exit_code']=130
+                except Exception as exc:
+                    result['phases']['captions']=_phase('deferred' if _busy(exc) else 'failed','sqlite_busy' if _busy(exc) else 'caption_error',error=safe_diagnostic(exc))
+            result['phases']['captions'].update(budget_seconds=max(0,budget) if captions else 0,duration_seconds=monotonic()-caption_started)
             for name,phase in result['phases'].items():
                 phase.setdefault('budget_seconds',0)
                 phase.setdefault('duration_seconds',max(0,monotonic()-phase_start) if name=='comments' else 0)
-                if name=='comments':phase.setdefault('collection_attempts',0)
+                if name in ('comments','captions'):
+                    phase.setdefault('collection_attempts',0)
+                    work=phase.get('result',{}).get('work',[])
+                    phase.setdefault('attempted',phase['collection_attempts'])
+                    phase.setdefault('succeeded',sum(w['status']=='completed' for w in work))
+                    phase.setdefault('failed',sum(w['status']=='failed' for w in work))
+                    phase.setdefault('deferred',sum(w['status']=='deferred' for w in work))
+                    phase.setdefault('incomplete',sum(w.get('outcome') in ('partial','uncertain','capped','missing','missing_formats','ambiguous') for w in work))
+                else:
+                    metadata=phase.get('result',{})
+                    phase.update(attempted=phase.get('metadata_requests'),succeeded=len(metadata.get('enriched',[])),
+                        failed=len(metadata.get('failures',[])),deferred=len(metadata.get('deferred',[])),
+                        incomplete=int(metadata.get('forward_coverage',{}).get('complete') is False))
             return finish()
     except CommentBusy:
         result['phases']={'discovery':_phase('deferred' if discover else 'not_requested','supplemental_cycle_active'),
                           'comments':_phase('deferred','supplemental_cycle_active')}
+        result['phases']['captions']=_phase('deferred' if captions else 'not_requested','supplemental_cycle_active')
         result.update(outcome='deferred',exit_code=75,reason='supplemental_cycle_active')
         return result
 
@@ -229,8 +307,8 @@ def render(result):
         lines.append(f"{name}: {phase['outcome']} | {phase['reason'] or 'finished'}")
         if 'plan' in phase:
             from .comment_planning import render as render_plan
-            lines.append(render_plan(phase['plan']))
+            lines.append((caption_planning.render if name=='captions' else render_plan)(phase['plan']))
         if 'result' in phase:
-            renderer=morning_discovery.render if name=='discovery' else comment_runner.render
+            renderer=morning_discovery.render if name=='discovery' else caption_runner.render if name=='captions' else comment_runner.render
             lines.append(renderer(phase['result']))
     return '\n'.join(lines)

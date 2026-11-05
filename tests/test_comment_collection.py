@@ -142,14 +142,16 @@ class CollectorTests(unittest.TestCase):
     def test_failure_and_rate_limit_do_not_retry_or_damage_history(self):
         first, _ = self.collect()
         before = Path(first["snapshot_path"]).read_bytes()
+        partial, _ = self.collect(execution([source(like_count=11)], returncode=1))
+        self.assertEqual(partial["outcome"], "partial")
+        self.assertIsNotNone(partial["snapshot_path"])
         failed, run = self.collect(cc.Execution(stderr=b"ERROR: HTTP Error 429: Too Many Requests\n", returncode=1))
         self.assertEqual(failed["outcome"], "failed")
         self.assertEqual(failed["exit_code"], 2)
         self.assertEqual(run.call_count, 1)
         self.assertEqual(Path(first["snapshot_path"]).read_bytes(), before)
-        partial, _ = self.collect(execution([source(like_count=11)], returncode=1))
-        self.assertEqual(partial["outcome"], "partial")
-        self.assertIsNotNone(partial["snapshot_path"])
+        from dls_video_downloader.youtube_safety import Blocked
+        with self.assertRaises(Blocked):self.collect(execution([source()]))
 
     def test_timeout_interruption_and_partial_json(self):
         for reason, exit_code in (("timeout", 2), ("interrupted", 130), ("output_limit", 2)):

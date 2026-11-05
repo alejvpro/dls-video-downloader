@@ -132,3 +132,12 @@ The independent [comment store and manual collector](COMMENTS.md) preserve compl
 ```
 
 Defaults: 1,000 comments, newest first, zero retries, 30-second socket timeout and 600-second process deadline. No media, captions or thumbnails are downloaded. `state/comments/` contains the catalog, snapshots and portable per-attempt JSON provenance. Repeat the same command manually to refresh; identical results reuse snapshots. A successful retrieval normally reports uncertain coverage, not exhaustive completeness. The command does not open the video inventory. Automatic refresh and comment scheduling remain unimplemented. The future Indexer, not this downloader, will interpret comments into structured chapters.
+
+Original-English caption preservation is implemented and offline-tested, but not
+activated in production. See [CAPTIONS.md](CAPTIONS.md) for read-only planning,
+explicit execution, immutable JSON3/VTT assets and independent retry history.
+Installed supplemental jobs do not enable captions.
+
+All DLS cron jobs are currently paused. [Shared YouTube safety](YOUTUBE-SAFETY.md)
+now gates every network workflow; cooldown expiry does not automatically resume
+requests or cron. Inspection is read-only and recovery requires explicit approval.

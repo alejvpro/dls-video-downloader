@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from . import youtube_safety as safety
 from .classification import DEFAULT_START, eligibility
 from .comments import APPLICATION_ID
 from .comment_refresh import evaluate_refresh, history_from_rows, utc
@@ -70,8 +71,17 @@ def plan(inventory_path, comment_root=PROJECT / "state/comments", *, now,
                             comments.execute("PRAGMA user_version").fetchone()[0])
                 if identity != (APPLICATION_ID, 1):
                     raise ValueError("Unsupported comment catalog")
-                return _plan(inventory, comments, now, start, cooldown_until)
-        return _plan(inventory, None, now, start, cooldown_until)
+                return safety.apply_plan(_plan(inventory, comments, now, start, cooldown_until),Path(inventory_path).resolve().parent,now)
+        return safety.apply_plan(_plan(inventory, None, now, start, cooldown_until),Path(inventory_path).resolve().parent,now)
+
+
+def selection_view(inventory, *, now, start=DEFAULT_START):
+    """Reuse inventory selection/provenance under caller's read transaction.
+
+    No comment catalog is read. Consumers use eligibility evidence, not the empty
+    comment-history refresh decisions attached by the existing view builder.
+    """
+    return _plan(inventory, None, instant(now), date.fromisoformat(start).isoformat(), None)
 
 
 def _plan(inventory, comments, now, start, cooldown):

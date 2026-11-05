@@ -181,8 +181,8 @@ class CycleTests(unittest.TestCase):
         self.seed();directory=self.root/'runner';directory.mkdir(parents=True)
         comment_runner.atomic_json(directory/'cooldown.json',dict(version=1,until=(self.now+timedelta(hours=6)).isoformat()))
         out=self.invoke(execute=True,discover=True)
-        self.assertEqual(out['phases']['discovery']['reason'],'collector_cooldown')
-        self.assertEqual(out['phases']['comments']['reason'],'collector_cooldown')
+        self.assertEqual(out['phases']['discovery']['reason'],'shared_youtube_cooldown')
+        self.assertEqual(out['phases']['comments']['reason'],'shared_youtube_cooldown')
         self.assertEqual(self.metadata,[]);self.assertEqual(self.collections,[])
 
     def test_discovery_blocking_persists_cooldown_stops_comments(self):
@@ -377,7 +377,7 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(out['phases']['comments']['collection_attempts'],1)
         rendered=cycle.render(out)
         self.assertIn('discovery: successful',rendered);self.assertIn('comments: successful',rendered)
-        self.assertNotIn('captions',out['phases'])
+        self.assertEqual(out['phases']['captions']['outcome'],'not_requested')
 
     def test_max_video_budget_and_manual_skip_are_respected(self):
         self.seed();self.seed(CLUB,'not_live',title='The Club');self.seed(TODAY)
@@ -442,7 +442,7 @@ class CycleTests(unittest.TestCase):
             cooldown_until=(self.now+timedelta(hours=6)).isoformat()))
         out=self.invoke(execute=True)
         self.assertEqual(self.collections,[])
-        self.assertEqual(out['phases']['comments']['reason'],'collector_cooldown')
+        self.assertEqual(out['phases']['comments']['reason'],'shared_youtube_cooldown')
         self.assertFalse((self.root/'comments.sqlite3').exists())
 
     def test_metadata_state_write_failure_stops_comment_phase(self):

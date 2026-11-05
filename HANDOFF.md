@@ -1,5 +1,109 @@
 # DLS video downloader handoff
 
+## Caption and YouTube safety Git checkpoint
+
+Caption preservation and shared YouTube safety are captured together because
+caption modules, controlled recovery, CLI, cycle integration and tests depend on
+each other. Earlier milestone sections retain their historical implementation
+and validation status. All six DLS cron commands remain paused; captions remain
+opt-in. This checkpoint performs no live request, legacy-state import, recovery,
+production migration, credential access, activation or push. Next operational
+steps still require separate supervised authorization as described below.
+
+## Shared YouTube safety milestone — offline, cron still paused
+
+All six DLS cron command lines remain commented out; unrelated entries are
+unchanged. The November 5 caption challenge and original cooldown/catalog/portable
+record are preserved. No shared production state import, network request,
+recovery, credential access, cron restoration, commit or push is performed here.
+
+New `youtube_safety.py` and bounded `youtube_recovery.py` coordinate one local
+state/event journal under ignored `state/youtube-safety/`. Both network subprocess
+launchers and their workflow/planning entry points participate, including the
+independent video runner. Bot verification defaults to 24h; explicit 429 honors
+Retry-After or 1h/6h/24h backoff. Bare 403/timeouts/unavailable assets are not global
+blocks. Legacy evidence is projected without rewriting or extending it. Expiry
+requires explicit coordinated recovery, never one probe per routine job. Repeated
+bot challenge during recovery requires manual review; no job is auto-resumed.
+
+Read-only commands: `youtube-safety status --json`, `youtube-safety events --json`,
+and existing planners. Explicit import/review/probe capabilities require separate
+operational authorization; see [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md). No notification
+transport is implemented. Future Pushover may consume immutable event IDs and
+alertable transitions; no notification credential file is accessed.
+
+Selection, AV1/Opus acquisition, receipts, comment cutoff and caption confirmation
+policy remain unchanged. Network work defers without clearing asset history.
+Already admitted subprocesses are not destructively interrupted; admission/launch
+and internal yt-dlp request races remain documented. Next: review checkpoint,
+then separately authorize legacy import and one controlled recovery observation;
+validate a bounded asset operation before considering any cron restoration.
+Verification: 55 new shared-safety tests and all 524 offline tests pass with
+network sockets and production yt-dlp/FFmpeg launches guarded; zero unexpected
+launches. All 93 protected production files, three SQLite integrity checks and
+paused crontab bytes match. No `state/youtube-safety/` directory was initialized.
+
+## Caption LOGIN_REQUIRED diagnosis — offline follow-up
+
+One authorized production `captions collect MbO7y_90zUI` attempt at November 5
+12:25 PST was blocked in fresh metadata extraction, before caption payloads.
+Failure attempt `069f9229f7774eb8b1252e4e32d672f7`, portable JSON, independent
+catalog and shared cooldown remain unchanged. Cooldown's original expiry is
+November 5 18:25:59 PST. Existing cron still does not enable captions.
+
+Offline comparison found no demonstrated networking defect causing the challenge:
+the earlier direct payload experiment reused existing metadata, while production
+had to obtain a fresh listing. Same yt-dlp release/build and explicit Node path;
+no forced client/cookies. Request volume, IP/session state and effective earlier
+client behavior cannot be established causally from retained logs. See CAPTIONS.md.
+
+Two small prospective failure-provenance corrections retain tool version before
+raising on failed extraction and fill cooldown attempt ID at record allocation.
+No authentication, extractor, acquisition/comment policy or production state
+changes. Actual retained error diagnostics replay correctly with mocked metadata
+execution and zero payload calls. All 469 offline tests pass, including two new
+failure-provenance regressions, with network/production-tool guards reporting
+zero unexpected launches. Next single live attempt and unattended rollout
+remain separately supervised decisions; no cached-URL workaround is implemented.
+
+## Caption preservation milestone — offline only
+
+Original-English JSON3 and VTT preservation is implemented but uncommitted and
+not activated. See [CAPTIONS.md](CAPTIONS.md). New independent modules provide an
+exact-byte immutable store/portable schema-1 records, track identity filtering,
+per-format recovery/revisions, pure retry planning and bounded execution. The
+existing selection view is reused without coupling caption planning to comment
+history. Full completed-status evidence is required; no MKV is needed.
+
+`captions plan`, `captions run` and default `cycle` are read-only. Manual
+`captions collect ID` and `captions run --execute` are live capabilities requiring
+separate supervised authorization. The supplemental cycle requires both
+`--execute --captions` to execute captions; the installed cron commands lack that
+flag and keep existing behavior. No production caption retrieval, catalog,
+source migration, cron changes, live requests or backfill occur in this milestone.
+
+Completion observation anchors missing-caption thresholds 1h/6h/24h/3d/7d/14d/30d;
+ordinary uploads prefer verified upload availability evidence. First complete
+preservation anchors +24h/+7d confirmations. Missed checkpoints are not replayed;
+revisions/manual refresh do not restart terminal monitoring. Technical errors use
+1h/6h/24h backoff and review after five consecutive failures. Missing listings,
+partial formats, technical failure and monitoring completion stay distinct.
+
+Caption defaults: one video/180 seconds, 16 MiB per representation, at most four
+English tracks and zero retries, within the unchanged 600-second shared cycle
+budget. Comments retain priority. Shared blocking cooldowns and separate locks
+apply; the existing acquisition-probe race remains documented. Portable JSON and
+checksummed source files are readable without SQLite. No interpretation,
+transcript generation, universal asset abstraction or Archiver integration exists.
+
+Verification: 84 new caption tests and all 467 offline tests pass. A guarded full
+suite also blocked network sockets and production external-tool launches without
+unexpected attempts. Read-only production planning created no caption state; all
+89 baseline-protected production files and installed cron bytes matched.
+
+Next step requires Level 1 approval for one bounded live caption validation and
+separate approval before adding the caption flag to unattended cycle commands.
+
 ## Production supplemental rollout — November 5, 2026
 
 Unified supplemental cycles are committed and scheduled alongside the unchanged

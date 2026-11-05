@@ -118,7 +118,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(runner.read_cooldown(self.root/'runner'),self.now+timedelta(hours=8))
         self.assertEqual(out['work'][1]['status'],'deferred')
         before=self.files();dry=self.invoke(execute=False)
-        self.assertEqual(dry['selected'],[]);self.assertEqual(dry['stop_reason'],'collector_cooldown')
+        self.assertEqual(dry['selected'],[]);self.assertEqual(dry['stop_reason'],'shared_youtube_cooldown')
         self.assertEqual(self.files(),before)
         self.assertEqual(Path(self.root/IDS[0]/'snapshots'/f"{previous['snapshot_hash']}.json").read_bytes(),snapshot)
 
@@ -246,11 +246,13 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(value['until'],'2026-11-05T14:00:00+00:00')
         self.root.mkdir();directory=self.root/'runner';directory.mkdir()
         runner.atomic_json(directory/'cooldown.json',dict(version=1,until=(self.now-timedelta(seconds=1)).isoformat()))
-        self.ingest();self.assertEqual(self.invoke()['exit_code'],0);self.assertEqual(len(self.network),1)
+        self.ingest();out=self.invoke();self.assertEqual(out['exit_code'],75);self.assertEqual(len(self.network),0);self.assertIn('recovery_eligible',out['stop_reason'])
 
     def test_blocking_diagnostics_conservative_and_comment_text_not_inspected(self):
-        for text in ['HTTP Error 403: Forbidden', "Sign in to confirm you’re not a bot",'HTTP Error 402']:
+        for text in ['LOGIN_REQUIRED', "Sign in to confirm you’re not a bot",'HTTP Error 429']:
             self.assertIsNotNone(runner.blocking_evidence({'error':text},self.now))
+        self.assertIsNone(runner.blocking_evidence({'error':'HTTP Error 403: Forbidden'},self.now))
+        self.assertIsNone(runner.blocking_evidence({'error':'HTTP Error 402'},self.now))
         self.assertIsNone(runner.blocking_evidence({'comments':[{'text':'HTTP Error 429'}]},self.now))
         self.assertIsNone(runner.blocking_evidence({'warnings':['unrelated warning']},self.now))
         until=runner.blocking_evidence({'error':'HTTP Error 429','coverage':{'diagnostics':'Retry-After: 999999'}},self.now)['until']
