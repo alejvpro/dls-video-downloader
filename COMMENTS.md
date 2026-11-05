@@ -5,7 +5,8 @@ objects**, not raw YouTube API responses. An independent manual collector retrie
 one explicit video's comments and submits them to this store. No background
 collection, retry execution, automatic refresh, or scheduling is installed. The
 existing media runner does not invoke comment collection. Offline tests use
-synthetic objects and disposable stores.
+synthetic objects and disposable stores. A pure offline refresh policy is also
+implemented; it evaluates supplied history but does not collect or schedule work.
 
 ## Manual single-video collection
 
@@ -255,6 +256,187 @@ SQLite. These operational artifacts remain ignored under `state/comments/`.
 No second live collection was performed; repeat/deduplication testing used
 synthetic disposable data.
 
+## Offline deterministic refresh policy
+
+`dls_video_downloader.comment_refresh.evaluate_refresh` is pure decision logic for
+one video's complete history. It does not open databases/files, read the clock,
+collect comments, update `refresh_state`, or schedule anything. No automatic
+comment runner, comment cron entry or historical backfill workflow is operational.
+
+```python
+from dls_video_downloader.comment_refresh import evaluate_refresh, RefreshPolicy
+
+decision = evaluate_refresh(
+    history,
+    now=explicit_now_utc,
+    published_at=original_verified_publication,
+    first_observed_at=first_discovered_at,
+    cooldown_until=collector_cooldown_until,
+    policy=RefreshPolicy(),
+)
+```
+
+### Publication-age limit and absent-target fallback
+
+Age always uses the video's original verified YouTube publication timestamp,
+never its media download/archive time. Date-only `datetime.date` evidence uses UTC
+midnight with `anchor_source='publication_date'`, explicitly retaining its day
+resolution. Only when authoritative publication evidence is unavailable may an
+explicit first-observed timestamp be used (`anchor_source='first_observed'`). A
+later discovery/backfill encounter never replaces a known original publication
+anchor. Without either anchor, automatic work stops with `missing_time_anchor`.
+Target detection and estimated comment timestamps cannot supply the age anchor.
+
+Days are elapsed 24-hour UTC periods, unaffected by DST. The final day-14 slot is
+exactly `[anchor + 14 days, anchor + 15 days)`, inclusive at its start and exclusive
+at its end. Every automatic due time is strictly before `deadline_at = anchor +
+15 days`, regardless of target sightings, failed checks, cooldowns or manual edits.
+The cutoff cannot be extended by policy configuration. A future runner must
+recheck it before acting and cap process execution to the remaining window.
+
+Until IrishWeegee has been observed:
+
+| State | Forward automatic decision |
+| --- | --- |
+| Never collected, before cutoff | Initial collection immediately once eligible |
+| Days 1–7 | Routine checks at least 24 hours after the previous collection finishes |
+| Days 8–13 | No routine refreshes; wait for day 14 |
+| Day 14 | One final check, with at most one bounded recovery if unsuccessful |
+| At/after day 15 | Suspend all forward automatic collection |
+| Explicit disabled/unavailable state | Limited day-7/day-14 checks within the same deadline |
+
+A video first discovered during days 8–13 can still receive its first collection;
+this does not replay missed intervals. Later routine checks wait for day 14.
+Existing collection history prevents a duplicate initial collection. A video first
+discovered at/after day 15 cannot start forward automatic collection. Unknown or
+empty results do not prove absence or deletion.
+
+### Early completion after one confirmation
+
+Only stable channel ID `UCbzm6UmzlMA-Yq6v3hvEipA` (IrishWeegee) triggers early
+completion. Display names never establish a match. Other configurable target IDs
+remain available for presence reporting; they do not initiate separate cycles.
+All successfully retrieved authors' comments remain preserved by the store.
+
+The first collection containing one or more IrishWeegee comments establishes one
+confirmation due **24 elapsed hours after that collection completes** (or after its
+collection timestamp if no finish time was recorded). Eligibility still prevents
+collection before the publication anchor. Multiple matching comments create one
+confirmation, not one per comment. A usable positive sighting in a partial result
+also switches to this cycle; it does not add an earlier retry before confirmation.
+The existing five-unsuccessful-attempt safety guard can still suspend work for review.
+
+The first subsequent collection starting at/after that due time and before the
+publication cutoff satisfies the confirmation opportunity. This can be a manual
+collection and need not contain IrishWeegee again. An earlier manual collection
+does not consume the opportunity or reset its original clock. Cooldowns may defer
+it, but cannot extend the publication deadline. Confirmation is a bounded exception
+to the routine days 8–13 pause: first detection on day 7 permits confirmation on
+day 8; first detection on day 13 permits confirmation on day 14.
+
+After a usable confirmation (`success`, `empty`, or ordinary `uncertain`) routine
+forward collection is complete. Explicit disabled/unavailable confirmation also
+closes the opportunity without claiming permanent unavailability. Later edits,
+metadata changes, new target comments, or missing target comments never resume
+collection or create another confirmation. A delayed confirmation consumes the
+one opportunity; there is no catch-up series. No long-term edit milestones or
+text-triggered follow-ups exist.
+
+If the first positive observation is so late that +24 hours reaches or exceeds
+day 15, no confirmation is scheduled (`confirmation_exceeds_window`). For example,
+first detection at the beginning of day 14 cannot receive a full +24-hour check
+before the exclusive cutoff. Source evidence remains preserved; this opportunity
+never guarantees corrections will be captured.
+
+### Failures, recovery and cooldowns
+
+Failed, invalid, partial/capped, timed-out and interrupted results are unsuccessful.
+Backoff is +1 hour after the first, +6 hours after the second, then +24 hours,
+measured from completion when available. Five consecutive unsuccessful attempts
+suspend pending review. Ordinary successful uncertain or empty retrieval is not a
+failure and resets the streak. No failed attempt erases earlier positive sightings.
+
+A failed/partial confirmation permits at most **one recovery attempt**, governed
+by that backoff and the original cutoff. It remains the same confirmation cycle;
+no new +24-hour sequence starts. Confirmation recovery, like confirmation itself,
+can occur in the routine pause. After a usable recovery, monitoring is complete.
+After an unsuccessful recovery, automatic work stops with
+`confirmation_recovery_exhausted` and review status. A later manual collection
+cannot cause another automatic retry cycle. If recovery cannot fit before the
+cutoff, it is not scheduled. Final absent-target checks have the same maximum-one
+recovery bound, within the final day-14 slot.
+
+Before any positive target sighting, transient retries respect the days 8–13 pause.
+Disabled/unavailable day-7 checks that fail wait for day 14 rather than initiating
+hourly polling. Explicit unavailability must be provided as
+`retrieval_state='unavailable'`; the policy does not guess it from error text.
+
+A supplied collector-wide `cooldown_until` is a lower bound for initial, routine,
+confirmation and recovery work. Work moved to/past the cutoff suspends. Rate-limit
+cooldowns never reopen or extend the window. Global cooldown lookup/persistence
+belongs to a future runner; this evaluator creates no shared state.
+
+### Evidence, outputs and completion meanings
+
+`now` is explicit and timezone-aware. Frozen `CollectionEvidence` inputs contain
+attempt ID, collection/optional finish times, outcome, retrieval state and
+`CommentEvidence(comment_id, author_id, text_hash)` sightings. The evaluator does
+not interpret source text or source comment timestamps, and does not compare text
+to generate work. Stable UTC sorting and validation make evaluations reproducible.
+
+`history_from_rows(attempt_rows, comment_rows)` adapts already-read rows without
+opening SQLite. Supply the full `collection_attempts` history for one video and an
+`attempt_comments`/`comment_versions` join exposing `attempt_id`, `comment_id`,
+`author_id`, `text_hash`. Coverage JSON supplies retrieval/finish evidence. Full
+history is essential to retain the first positive observation and completed or
+exhausted confirmation cycle; using only the latest snapshot could restart work.
+The existing schema, observations, snapshots and portable records are unchanged.
+
+`RefreshDecision` reports due/deferred time, `deadline_at`, reason, suspension,
+manual eligibility, review status, anchor/source, failure streak, phase
+(`ordinary`, `disabled`, `confirmation`), last attempt/outcome and `TargetPresence`
+metadata. `confirmation_due_at` is the original eligible +24-hour time, before any
+cooldown; it is null when no confirmation can fit. The primary/recovery attempt
+IDs identify which evidence consumed the opportunity.
+
+`monitoring_complete=True` means the policy's confirmation/recovery or final
+fallback opportunity has been fulfilled. It does **not** mean the retrieved comment
+set is exhaustive: an ordinary uncertain result can complete the monitoring cycle.
+An expired or exhausted unsuccessful cycle is suspended for manual review, without
+a false completeness claim. Neither suspension nor monitoring completion implies
+comments are permanently unavailable. Missing matches never establish deletion.
+
+Manual collection remains available for videos of any age, subject to YouTube
+availability and rate limits. It may preserve corrected text as a new immutable
+snapshot, but cannot restart an exhausted confirmation cycle or extend the age
+window. Original and changed text, other authors and historical positive sightings
+remain preserved. The bounded window and early stop reduce downstream archival
+churn without freezing later explicitly requested source observations.
+
+### Future backfill compatibility: separate intent, not a cutoff override
+
+Historical backfill is not implemented. A future explicitly authorized workflow
+may collect an old video's comments once even though its **forward refresh**
+decision is suspended. That eligibility belongs outside this evaluator; there is
+no backfill intent flag that weakens the publication cutoff. Manual collection is
+already independent of this automatic policy.
+
+A backfilled video still inside its original publication-age window can use this
+same policy after its initial collection. Read existing YouTube-ID history first:
+`last_attempt_id` identifies a prior attempt; its outcome plus catalog snapshot
+references and source artifacts establish whether source data was actually saved.
+A failed attempt alone must not be labeled a completed archival asset. Encountering
+an already collected ID again must not enqueue another initial/backfill collection.
+A legitimate due forward refresh is a different reason to collect, not a replay
+of backfill. Do not substitute acquisition/download time or the backfill encounter
+for a known original publication date. Tests cover the separate-intent boundary;
+no backfill commands, queues or scheduling are provided.
+
+A future independent runner must select candidates, re-read history under its
+comment-only lock, enforce per-run budgets/cooldowns and remaining execution time,
+and record attempts before reevaluation. `automatic_suspended=True` is an explicit
+operator pause, not a cached derived result. No policy state is written here.
+
 ## Independent readers and future work
 
 `load_snapshot(video_id, snapshot_hash)` verifies the hash and returns the saved
@@ -265,8 +447,9 @@ No searchable content index, chapters, segment metadata, episode relationships,
 or comment summaries are created here. Indexer owns interpretation; Archiver owns
 long-term preservation, backup, and any future handoff.
 
-Next phases may add independently tested retry/refresh policy and execution.
-Neither is implemented. No production video
+Offline retry/refresh decisions are implemented. Independent scheduled execution,
+read-only planning/status CLI integration and the admin interface remain future
+work. No production video
 database, acquisition receipt, classifier, media lock, or cron configuration is
 used by this storage module. The explicit store root also makes tests independent
 of the operational comment tree.
@@ -276,4 +459,5 @@ Run the synthetic regression tests with:
 ```sh
 /opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comments.py -v
 /opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comment_collection.py -v
+/opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comment_refresh.py -v
 ```
