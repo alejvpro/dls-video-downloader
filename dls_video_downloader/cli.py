@@ -31,8 +31,23 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(Path(__file__).resolve().parent.parent / "state/inventory.sqlite3"))
     commands = parser.add_subparsers(dest="command", required=True)
-    comments = commands.add_parser("comments", help="Independent manual comment collection")
-    collect = comments.add_subparsers(dest="comment_command", required=True).add_parser("collect")
+    comments = commands.add_parser("comments", help="Independent comment collection and read-only planning")
+    comment_commands = comments.add_subparsers(dest="comment_command", required=True)
+    comment_plan = comment_commands.add_parser("plan", help="Read-only inventory comment refresh plan")
+    comment_plan.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
+    comment_plan.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
+    comment_plan.add_argument("--now", help="Explicit timezone-aware evaluation time (default: current UTC)")
+    comment_plan.add_argument("--json", action="store_true")
+    comment_plan.add_argument("--details", action="store_true", help="Include excluded IDs in human output")
+    runner = comment_commands.add_parser("run", help="Bounded comment runner; dry-run unless --execute")
+    runner.add_argument("--execute", action="store_true")
+    runner.add_argument("--json", action="store_true")
+    runner.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
+    runner.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
+    runner.add_argument("--max-videos", type=int, default=2)
+    runner.add_argument("--max-comments", type=int, default=1000)
+    runner.add_argument("--runtime-seconds", type=int, default=600)
+    collect = comment_commands.add_parser("collect")
     collect.add_argument("id", type=comment_video_id)
     collect.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
     collect.add_argument("--max-comments", type=int, default=1000)
@@ -75,6 +90,31 @@ def main(argv=None):
         command.add_argument("--json", action="store_true")
         command.add_argument("--details", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "comments" and args.comment_command == "run":
+        from .comment_runner import run, render
+        from .comment_collection import safe_diagnostic
+        try:
+            result = run(args.db, args.store_root, execute=args.execute, max_videos=args.max_videos,
+                         max_comments=args.max_comments, runtime_seconds=args.runtime_seconds, start=args.start_date)
+            print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result))
+            return result["exit_code"]
+        except KeyboardInterrupt:
+            print("Comment runner interrupted", file=sys.stderr)
+            return 130
+        except Exception as exc:
+            print(f"Comment runner failed: {safe_diagnostic(exc)}", file=sys.stderr)
+            return 1
+    if args.command == "comments" and args.comment_command == "plan":
+        from datetime import datetime, timezone
+        from .comment_planning import plan, render
+        try:
+            result = plan(args.db, args.store_root, now=args.now or datetime.now(timezone.utc),
+                          start=args.start_date)
+            print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result, include_excluded=args.details))
+            return 0
+        except Exception as exc:
+            print(f"Comment planning failed: {exc}", file=sys.stderr)
+            return 1
     if args.command == "comments":
         if not 1 <= args.max_comments <= 1000 or not 1 <= args.timeout_seconds <= 600:
             parser.error("Comment limit must be 1..1000; timeout must be 1..600 seconds")

@@ -2,9 +2,9 @@
 
 `dls_video_downloader.comments.CommentStore` stores **yt-dlp-extracted comment
 objects**, not raw YouTube API responses. An independent manual collector retrieves
-one explicit video's comments and submits them to this store. No background
-collection, retry execution, automatic refresh, or scheduling is installed. The
-existing media runner does not invoke comment collection. Offline tests use
+one explicit video's comments and submits them to this store. A bounded runner
+can select and execute due work when explicitly requested; no unattended collection
+or scheduling is installed. The existing media runner does not invoke comment collection. Offline tests use
 synthetic objects and disposable stores. A pure offline refresh policy is also
 implemented; it evaluates supplied history but does not collect or schedule work.
 
@@ -260,8 +260,9 @@ synthetic disposable data.
 
 `dls_video_downloader.comment_refresh.evaluate_refresh` is pure decision logic for
 one video's complete history. It does not open databases/files, read the clock,
-collect comments, update `refresh_state`, or schedule anything. No automatic
-comment runner, comment cron entry or historical backfill workflow is operational.
+collect comments, update `refresh_state`, or schedule anything. The independent
+bounded runner below consumes these decisions; no comment cron entry or historical
+backfill workflow is operational.
 
 ```python
 from dls_video_downloader.comment_refresh import evaluate_refresh, RefreshPolicy
@@ -291,8 +292,8 @@ Days are elapsed 24-hour UTC periods, unaffected by DST. The final day-14 slot i
 exactly `[anchor + 14 days, anchor + 15 days)`, inclusive at its start and exclusive
 at its end. Every automatic due time is strictly before `deadline_at = anchor +
 15 days`, regardless of target sightings, failed checks, cooldowns or manual edits.
-The cutoff cannot be extended by policy configuration. A future runner must
-recheck it before acting and cap process execution to the remaining window.
+The cutoff cannot be extended by policy configuration. The bounded runner
+rechecks it before acting and caps process execution to the remaining window.
 
 Until IrishWeegee has been observed:
 
@@ -374,7 +375,7 @@ hourly polling. Explicit unavailability must be provided as
 A supplied collector-wide `cooldown_until` is a lower bound for initial, routine,
 confirmation and recovery work. Work moved to/past the cutoff suspends. Rate-limit
 cooldowns never reopen or extend the window. Global cooldown lookup/persistence
-belongs to a future runner; this evaluator creates no shared state.
+belongs to the independent runner; this evaluator creates no shared state.
 
 ### Evidence, outputs and completion meanings
 
@@ -432,9 +433,9 @@ of backfill. Do not substitute acquisition/download time or the backfill encount
 for a known original publication date. Tests cover the separate-intent boundary;
 no backfill commands, queues or scheduling are provided.
 
-A future independent runner must select candidates, re-read history under its
-comment-only lock, enforce per-run budgets/cooldowns and remaining execution time,
-and record attempts before reevaluation. `automatic_suspended=True` is an explicit
+The independent runner selects candidates, re-reads history under the collector
+lock, enforces per-run budgets/cooldowns and remaining execution time, and records
+attempts through the existing collector. `automatic_suspended=True` is an explicit
 operator pause, not a cached derived result. No policy state is written here.
 
 ## Independent readers and future work
@@ -447,8 +448,8 @@ No searchable content index, chapters, segment metadata, episode relationships,
 or comment summaries are created here. Indexer owns interpretation; Archiver owns
 long-term preservation, backup, and any future handoff.
 
-Offline retry/refresh decisions are implemented. Independent scheduled execution,
-read-only planning/status CLI integration and the admin interface remain future
+Offline retry/refresh decisions, read-only planning and explicit bounded execution
+are implemented. Unattended scheduling and the admin interface remain future
 work. No production video
 database, acquisition receipt, classifier, media lock, or cron configuration is
 used by this storage module. The explicit store root also makes tests independent
@@ -461,3 +462,152 @@ Run the synthetic regression tests with:
 /opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comment_collection.py -v
 /opt/homebrew/bin/python3 -B -m unittest discover -s tests -p test_comment_refresh.py -v
 ```
+
+## Independent read-only comment planning
+
+```sh
+/opt/homebrew/bin/python3 -B -m dls_video_downloader comments plan
+/opt/homebrew/bin/python3 -B -m dls_video_downloader comments plan --json
+```
+
+`--details` includes excluded videos in human output; JSON includes all known
+inventory IDs. All displayed times are UTC. Global `--db PATH` must precede
+`comments`; `--store-root PATH` selects a separate comment tree. `--start-date`
+defaults to the existing forward boundary, 2026-10-26. `--now` accepts an explicit
+timezone-aware ISO timestamp for reproducible evaluation. Without it, only the
+CLI reads the current UTC clock. The Python API is
+`comment_planning.plan(inventory_path, comment_root, now=..., start=...,
+cooldown_until=...)`; the cooldown is supplied data, not persistent scheduler state.
+
+Both databases are opened read-only, without migrations, importer calls,
+reclassification, source JSON reads, locks, or runtime logs. An absent comment
+catalog means no prior collection; it is not initialized. An existing invalid
+catalog fails closed. Each database is read in its own consistent transaction;
+the two databases do not form a shared atomic snapshot. Planning never discovers
+IDs or calls the collector. It works with newer inventory observations without
+requiring media, acquisition receipts, or changes to the video runner.
+
+Selection reuses the current stored classifications, persistent decisions, and
+existing eligibility function. Skip/reject and unresolved content remain excluded;
+explicit approval can select content but cannot bypass the forward boundary or
+hard age cutoff. Daily shows require `was_live`; upcoming, live and processing
+(`post_live`) videos are deferred from selection. The Club can be a normal upload.
+
+For completed livestreams, age uses `release_timestamp` (YouTube livestream
+start/release evidence), then `release_date`/`upload_date`. For other uploads,
+`timestamp` (availability/upload evidence) precedes `release_timestamp`, then
+source dates. Invalid fields are skipped; title dates and download times are never
+used. Numeric evidence supplies its UTC date to the existing eligibility rules.
+Date-only evidence retains date precision and uses the policy's UTC-midnight
+anchor. The chosen original field, raw timing values and inventory provenance
+remain visible. `timestamp` is never labeled broadcast end.
+
+Without usable publication evidence, the policy's explicit `first_seen` fallback
+is shown, but automatic selection fails closed because the forward date boundary
+cannot be verified. An approval does not remove this requirement. A known old
+publication date is never replaced by discovery time.
+
+The planner adapts full collection-attempt and comment-version relationships to
+`history_from_rows()` and `evaluate_refresh()`. It preserves the committed daily,
+final-day, retry, cutoff and single-confirmation semantics, including successful
+uncertain-coverage confirmation. It does not rely on a latest-success cache or
+infer deletion from absent comments. Output includes first/last collections,
+positive author observations, confirmation attempt/time, first observed completed
+status (source observation and local import separately), next due time, cutoff,
+phase, monitoring completion and exclusion reasons. Monitoring completion is not
+exhaustive retrieval or permanent comment unavailability.
+
+`due_ids` orders due work by oldest due time, with initial collections winning
+ties. This is a plan, not execution authorization. The bounded runner described
+below refreshes inputs, checks deadlines, applies budgets and honors its independent
+cooldown. Morning discovery, unattended scheduling and backfill remain unimplemented.
+Manual collection remains available independently.
+
+## Independent bounded comment runner
+
+```sh
+# Default: read-only dry-run. Does not create locks, catalogs, reports or snapshots.
+python3 -B -m dls_video_downloader comments run
+python3 -B -m dls_video_downloader comments run --json
+
+# Explicit execution capability; live validation requires separate approval.
+python3 -B -m dls_video_downloader comments run --execute --max-videos 2 \
+  --max-comments 1000 --runtime-seconds 600 --json
+```
+
+Global `--db PATH` precedes `comments`; `--store-root PATH` and `--start-date`
+work as for the planner. The runner does not offer an artificial CLI clock for
+execution. Dry-run reports the initial selection under the video-count budget,
+remaining due count, exclusions, publication anchors, history and cooldown. It is
+not a promise of execution: current eligibility, locks, timing and history can
+change before execution. `comments plan` remains separately read-only and detailed.
+
+Defaults are two videos, 1,000 comments each, sequentially, with one 600-second
+invocation budget. Allowed limits are 1–10 videos, 1–1,000 comments and 30–600
+seconds. The monotonic deadline starts before planning and never resets between
+videos. Each extraction timeout is the smaller of the remaining invocation budget
+and original publication-age window, rounded down with a one-second reserve.
+At least 30 seconds of extraction allowance must remain; otherwise defer instead
+of launching another request. Cleanup, JSON persistence and local reporting can
+finish after the network budget; the collector kills/reaps its subprocess group.
+No internal network retries were added; socket timeout remains 30 seconds.
+
+Execution takes `state/comments/runner/.runner.lock` nonblockingly and retains the
+existing per-collection `.collector.lock`. After acquiring the collector lock and
+initializing its store, the collector invokes an optional runner preflight before
+starting extraction. This reopens read-only inventory/history views and reevaluates
+current policy, including the hard cutoff, current manual decisions and cooldown.
+A manual collection completed since initial planning can therefore consume the due
+opportunity without a duplicate network collection. The hook can only reduce the
+caller's timeout. No policy/schema changes or importer calls are involved.
+
+Before each request the runner probes the existing acquisition lock nonblockingly.
+If busy, it defers; if the lock file is absent it does not create it. It never holds
+that lock during extraction or changes the video runner. **This cannot guarantee
+strict mutual exclusion:** acquisition can begin after the probe. Video priority
+means deferring to already-active acquisition, without making the video cron skip
+because comments held its lock. Stronger coordination needs a separate design.
+
+Only explicit execution writes these small independent files:
+
+- `state/comments/runner/cooldown.json`: versioned global cooldown and sanitized
+  rate-limit/blocking evidence, written by atomic replacement.
+- `state/comments/runner/last-run.json`: latest invocation report, atomically
+  replaced, at most 256 KiB. It includes selected candidates, outcome/attempt and
+  portable artifact references, deferrals/skips, timings, budgets and stop reason.
+  It is not an append-only log or a new observation database. Per-attempt evidence
+  remains permanently available through the existing catalog/portable records.
+
+Known HTTP 429/402, HTTP 403 access failures, rate-limit and bot/blocking diagnostics
+stop the batch immediately and establish a six-hour minimum cooldown. A recognizable
+`Retry-After` header (positive seconds or timezone-qualified HTTP date) can extend
+that interval; shorter or malformed values never shorten the conservative default.
+Only extractor diagnostics are examined, never source comment contents. Future
+invocations read the cooldown, which does not extend publication-age deadlines.
+Invalid cooldown state fails closed for manual review. Manual `comments collect`
+remains independent and intentionally does not silently adopt runner policy.
+
+Ordinary recorded extraction failures/partial results consume a video slot, retain
+all usable evidence and permit the next selected candidate within budget. Future
+invocations use the established per-video backoff/suspension policy. Rate limits,
+interruption, overlap, exhausted runtime or unknown persistence/programming errors
+stop additional network work. Cooldown/report write failures are visible errors,
+not reasons to retry extraction. Exit codes: 0 successful/dry/deferred operation,
+2 recorded retrieval failure or blocking, 1 fatal error, 75 runner/collector overlap,
+130 interruption. These are independent of the media cron's exit status.
+
+Reports preserve source release/start and upload/availability fields, inventory
+first-seen/completed observations, prior target sightings and confirmation timing.
+Collected work adds collection start/completion and portable-record/snapshot paths.
+Target ID lists in runner summaries are limited to 20 IDs plus their full count;
+the catalog and snapshots retain all sightings. IrishWeegee's exact source fields
+(`timestamp`, relative label, edit indicators) remain in the original portable
+snapshot, linked by the report. Those estimates are not exact posting/edit times;
+YouTube `timestamp` is not asserted to be broadcast end. No timing analytics,
+comment interpretation or duplicate source-data database was added.
+
+This milestone validates execution offline only, using disposable catalogs and
+mocked extraction. No production runner execution or additional live comment
+collection has been performed. No comment cron, morning discovery, backfill,
+Indexing or Archiver integration is installed. A separately approved live bounded
+test is the next step.

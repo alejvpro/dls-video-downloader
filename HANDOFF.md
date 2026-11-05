@@ -50,7 +50,7 @@ The downloader acquires media and preserves source observations without interpre
 
 ## Next priorities — separate authorized phases
 
-1. **Preserve YouTube comments.** The independent [manual collector, store and offline refresh policy](COMMENTS.md) support `comments collect VIDEO_ID` and pure deterministic `evaluate_refresh` decisions. The collector retains its 1,000-comment cap, newest-first sorting, zero retries, explicit runtimes, bounded pipes/timeouts and comment-only lock. Snapshots/schema remain version 1. Forward age uses original YouTube publication evidence. Until IrishWeegee is observed, collect initially, daily through day 7, then once during day 14. First positive observation instead schedules one +24-hour confirmation, then early completion; no text edits or later absence restart monitoring. All automatic work stops before day 15, including bounded recovery. No refresh execution, policy CLI, scheduling or operational policy-state writes are implemented. Review the policy before a separately authorized independent runner. Historical comment backfill remains a separate future workflow; do not weaken the cutoff or parse comments into chapters.
+1. **Preserve YouTube comments.** The independent [manual collector, store and offline refresh policy](COMMENTS.md) support `comments collect VIDEO_ID` and pure deterministic `evaluate_refresh` decisions. The collector retains its 1,000-comment cap, newest-first sorting, zero retries, explicit runtimes, bounded pipes/timeouts and comment-only lock. Snapshots/schema remain version 1. Forward age uses original YouTube publication evidence. Until IrishWeegee is observed, collect initially, daily through day 7, then once during day 14. First positive observation instead schedules one +24-hour confirmation, then early completion; no text edits or later absence restart monitoring. All automatic work stops before day 15, including bounded recovery. Read-only planning and explicitly requested bounded execution are now implemented (see below); no unattended scheduling is installed. Historical comment backfill remains a separate future workflow; do not weaken the cutoff or parse comments into chapters.
 2. **Local admin interface.** Build a localhost-only browser interface showing recent acquisitions with titles, verified publication dates, YouTube IDs, acquisition timestamps and verification status, plus failures, retries and pending work. Include ambiguous-video Review queues with Keep, Skip and Clear Decision; retain reversible decision history and support search, filtering and past-decision review. Eventually show comment collection status. Direct YouTube-hosted thumbnail URLs are acceptable; no local image cache is necessary. No interface exists yet.
 3. **Historical backfill.** Work backward before October 26, 2026 toward the channel's earliest uploads around June 2021, using bounded date ranges. Reuse inventory, classifications and decisions; review uncertain historical material before downloading. Keep backfill independent from ongoing cron acquisition and never overwrite verified forward acquisitions. Historical publishing formats need evidence-based rules; no backfill workflow exists yet.
 
@@ -95,15 +95,15 @@ There is no long-term monitoring, text-edit budget or new confirmation cycle.
 `monitoring_complete` means the policy opportunity was fulfilled, not exhaustive
 comment retrieval or permanent unavailability. Uncertain successful retrieval can
 complete confirmation. Presence/history remains preserved. Manual refresh stays
-available at any age. The future runner must enforce locks, budgets, cooldowns and
-remaining process time; none of that orchestration is implemented here.
+available at any age. The policy itself does not enforce locks, budgets or persistence. The bounded
+runner described below now supplies that orchestration.
 
 Historical comment backfill remains separate: a future explicitly authorized
 workflow may collect an old video once, while forward automatic eligibility stays
 suspended. Existing YouTube-ID history prevents duplicate initial collection;
 backfilled videos inside the original age window can enter normal refresh policy.
 No backfill flag bypasses the cutoff. No backfill command, queue, cron change,
-automatic runner, admin interface or Archiver integration is implemented.
+unattended comment scheduling, admin interface or Archiver integration is implemented.
 
 The existing November 4, 2 p.m. Pacific video cron metadata updates were retained
 (`2026-11-04T220001.162208+0000-512ea43b`). Each policy refinement uses a fresh
@@ -112,3 +112,67 @@ preservation baseline and never reverts legitimate scheduled inventory changes.
 ## Development conventions
 
 Make incremental, reviewable changes and implement one major feature at a time. Run offline tests, preserve production SQLite and downloaded media, and use explicit executable paths for unattended processes. Do not change cron or production acquisition behavior without authorization. Do not stage runtime data, credentials or extraction dumps. Commit at sensible checkpoints, then stop and report after each authorized phase. Start a new session by checking Git and read-only status; historical validation documents describe past snapshots, not necessarily current counts.
+
+## Read-only comment planner phase
+
+`comments plan [--json] [--details] [--now ISO]` now reads existing inventory and
+comment catalog without network access or operational writes. Global `--db` and
+local `--store-root` support disposable fixtures. Missing comment catalogs are not
+initialized; invalid existing catalogs fail closed. No discovery, collection,
+reclassification, media eligibility mutation or scheduler installation occurs.
+
+`comment_planning.plan(..., now=...)` reuses inventory report/eligibility and the
+committed pure refresh evaluator with full per-video comment history. Due IDs are
+ordered by due time, initial work winning ties. Completed daily shows use retained
+release/start evidence; normal Club uploads use availability/upload timestamps.
+Source fields/provenance and date precision are exposed. Forward date boundaries
+and the day-15 cutoff apply even to approvals; unknown publication evidence cannot
+authorize forward collection. The first-observed fallback is visible but does not
+bypass that selection restriction. No downloaded media is required.
+
+Human output labels UTC and summarizes exclusions; JSON/details include them.
+Confirmation completion remains distinct from retrieval completeness. See
+COMMENTS.md for source precedence, timing evidence and CLI/API details. The bounded runner below now provides execution-time revalidation, bounded
+budgets, independent logs/lock and global cooldown persistence, with the documented
+nonblocking acquisition-probe limitation. Morning discovery and historical backfill
+remain separate future work.
+
+## Bounded comment runner milestone
+
+`comments run` defaults to read-only dry-run; `--json` provides structured output.
+`--execute` enables independent, sequential collection using the existing planner,
+policy, collector and store. Defaults: two videos, 1,000 comments/video, one total
+600-second invocation deadline. Limits: 1–10 videos, 1–1,000 comments, 30–600 seconds.
+No discovery, reclassification, media existence requirement, video-state writes,
+backfill or unattended scheduling was added. The planner is included in the same checkpoint.
+
+The runner holds a separate comment-runner lock and revalidates under the existing
+collector lock immediately before extraction through a small optional collector
+preflight hook. Shared remaining-time/publication budgets reduce the collector
+process timeout; insufficient time defers. An existing busy acquisition lock defers
+comments nonblockingly; it is never held over network work. Acquisition can begin
+after the probe: this conservative strategy does not guarantee strict exclusion,
+and the video runner's locking semantics are unchanged.
+
+`state/comments/runner/cooldown.json` retains sanitized blocking evidence and a
+six-hour minimum global cooldown (extended by reliable Retry-After evidence).
+`runner/last-run.json` is a bounded atomically replaced latest report; permanent
+per-attempt history remains in the established catalog and portable records.
+Malformed cooldown state or unexpected persistence errors fail closed. Ordinary
+recorded failures allow the next selected video; blocking/interruption stops the
+batch. Dry-run creates none of these files. See COMMENTS.md for commands, limits,
+exit codes, timing evidence, lock limitations and report details.
+
+Execution acceptance tests use only disposable stores and mocked extraction.
+Production validation for this milestone is dry-run only; no additional live
+YouTube collection is authorized or performed. Before one live runner test, review
+this implementation and explicitly authorize the production comment-state writes.
+Morning discovery, cron, captions, backfill, admin UI and Archiver integration
+remain outside this milestone. This checkpoint includes no live runner validation.
+
+Offline milestone verification: 38 new runner acceptance tests and all 293 total
+tests pass. Read-only production dry-run selected the oldest two of nine due IDs
+and deferred seven by budget. All 68 baseline inventory/acquisition/comment files
+retained their SHA-256 hashes, no production runner tree was created, and the cron
+hash was unchanged. No live extraction occurred. These are validation observations,
+not fixed candidate counts for future invocations.

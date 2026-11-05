@@ -201,7 +201,10 @@ def assess(video_id, execution):
     return comments, outcome, coverage, tool, warnings, failure
 
 
-def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600):
+def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, before_collect=None):
+    # Optional runner preflight is invoked under the collector lock, after store
+    # initialization and before extraction. Raising prevents network work; returning
+    # an integer supplies the remaining invocation/publication timeout budget.
     if not isinstance(video_id, str) or not VIDEO_ID.fullmatch(video_id):
         raise ValueError("Expected an 11-character YouTube video ID")
     if type(max_comments) is not int or not 1 <= max_comments <= 1000:
@@ -213,6 +216,11 @@ def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600):
         raise ValueError("Comment store must be separate from video operational data")
     with collection_lock(root) as lock_fd:
         with CommentStore(root) as store:
+            if before_collect is not None:
+                remaining_timeout = before_collect()
+                if type(remaining_timeout) is not int or not 1 <= remaining_timeout <= 600:
+                    raise ValueError("Invalid preflight timeout")
+                timeout = min(timeout, remaining_timeout)
             started_at = timestamp()
             argv = command(video_id, max_comments)
             try:
@@ -238,7 +246,7 @@ def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600):
             record = json.loads(portable.read_bytes())
             attempt = record["collection"]
             snapshot = record["snapshot"]
-            return {**result, "video_id": video_id, "retrieval_state": coverage["retrieval_state"],
+            return {**result, "collected_at": started_at, "video_id": video_id, "retrieval_state": coverage["retrieval_state"],
                     "retrieved_count": attempt["retrieved_count"], "top_level_count": attempt["top_level_count"],
                     "reply_count": attempt["reply_count"], "coverage": attempt["coverage"],
                     "warnings": warnings, "error": attempt["error"], "snapshot": snapshot,
