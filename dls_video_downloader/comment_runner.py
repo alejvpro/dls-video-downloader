@@ -122,7 +122,7 @@ def _summary(item):
 
 def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
         max_comments=1000, runtime_seconds=600, start=DEFAULT_START,
-        clock=None, monotonic=None, acquisition_lock=None):
+        clock=None, monotonic=None, acquisition_lock=None, deadline=None):
     """Run sequentially under one deadline. Clock seams are for offline tests only."""
     if type(max_videos) is not int or not 1 <= max_videos <= 10:
         raise ValueError('max videos must be 1..10')
@@ -133,6 +133,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
     clock = clock or (lambda: datetime.now(timezone.utc))
     monotonic = monotonic or time.monotonic
     end = monotonic() + runtime_seconds
+    if deadline is not None:
+        end = min(end, deadline)
     root = Path(root).resolve()
     if root == PROJECT / 'state' or root.is_relative_to(PROJECT / 'state/acquisitions'):
         raise ValueError('Comment runner state must be separate from video state')

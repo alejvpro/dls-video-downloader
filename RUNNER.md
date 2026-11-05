@@ -125,3 +125,234 @@ There are still 400 IDs, four manual decisions, and three verified acquisitions.
 ### Post-activation check — October 29, 1:14 a.m. Pacific
 
 The installed crontab checksum still matches the activation receipt, the original pre-activation content remains an exact prefix, and the DLS command occurs exactly once. Only the two known manual run records exist; no scheduled invocation has occurred yet. The first check remains due at 11 a.m. Pacific. The latest manual run recorded no new IDs, no downloads and no failures, with no pending retry state. No additional discovery or acquisition was triggered for this check.
+
+## Forward metadata discovery and supplemental cycle
+
+```sh
+# Read-only plan: no network, locks, logs, stores or operational writes.
+python3 -B -m dls_video_downloader cycle --json
+
+# Explicit comments from existing inventory, without discovery.
+python3 -B -m dls_video_downloader cycle --execute --json
+
+# Explicit forward metadata discovery followed by independent due comments.
+python3 -B -m dls_video_downloader cycle --execute --discover --json
+
+# Metadata only; writes inventory when explicitly invoked.
+python3 -B -m dls_video_downloader discover-morning --json
+```
+
+`--discover` alone is rejected. Global `--db PATH` precedes the command;
+`--store-root PATH` selects the separate comment store. None of these commands
+starts or waits for media acquisition. The established video `run` and `discover`
+commands, their `--max-enrich` option, cleanup, retries and cron are unchanged.
+The supplemental schedule below is installed. The corrected forward path passed
+383 offline tests and one supervised live cycle; unattended success is not yet
+verified.
+
+### Comprehensive forward enrichment
+
+Supplemental discovery no longer has a two/four-slot enrichment quota, content
+priority queue, or hypothetical completed-classification ranking. It attempts
+**every pending forward candidate once** unless safety conditions defer it. Oldest
+forward source evidence goes first, so a known current broadcast precedes newer
+mini-broadcasts without reserving a small number of slots.
+
+Forward scope uses a 15-day recent-evidence window, bounded by the existing forward
+start date, and includes:
+
+- IDs currently presented in the bounded channel heads, if publication is unknown.
+- IDs with reliable recent publication/release evidence, including those needing
+  first full metadata outside the current head.
+- IDs recently presented by this bounded forward workflow whose metadata is still
+  incomplete, even if newer mini-broadcasts displace them from the head.
+- Undated videos with recently observed *full* upcoming/live/post-live status.
+
+Known old publication evidence always wins over a recent presentation. Known dates
+more than 15 days ahead are deferred outside the forward horizon. Legacy inventory
+`first_seen`, mutable counters, title dates and flat `was_live` labels are not proof
+of publication age. In particular, old undated flat-only records outside the recent
+heads do not enter forward enrichment. They remain preserved historical backlog,
+with a count/sample in reports and full evidence still available in inventory.
+No historical backfill command or automatic history scan is added.
+
+Bounded-head provenance is recorded in the existing `sources` table as
+`morning:live` / `morning:videos`, alongside the original `live` / `videos` source.
+Alias times describe extraction observations, not publication. This lets unfinished
+current work survive head changes without a second database or persistent work
+queue. Original first-seen values, immutable observations and manual decisions are
+preserved. The importer accepts this optional provenance; existing video-runner
+calls retain their original behavior. Classification semantics are unchanged.
+
+Full metadata is requested for all scoped IDs lacking adequate verified metadata,
+including unselected mini-broadcasts. Explicit manual Skip/Reject decisions exclude
+metadata enrichment and are reported separately. Successful upcoming/live/post-live
+metadata is refreshed on later cycles until it resolves. Adequately complete means
+matching official identity, full consistent `was_live` or `not_live` evidence, and
+usable original publication evidence. These completed IDs are not routinely
+re-enriched unless the current listing contradicts their status. Missing status or
+publication evidence remains unresolved, never invented.
+
+Flat status is only a hint. It cannot establish daily-show completion. Full
+validated `was_live` metadata can make the existing comment planner select a daily
+show without an MKV. The Club remains a normal-upload case. No duration threshold,
+classification rule, comment cadence, confirmation rule or publication cutoff has
+changed. A first check of an undated current listing can reveal an old publication;
+that evidence is preserved and the ID then leaves forward scope. This is not an
+invitation to enrich other historical IDs.
+
+### Protective limits and retry state
+
+Defaults: **10 Streams entries**, Videos disabled, a **180-second metadata budget**,
+60 seconds per extractor process, 30-second socket timeout, and zero internal
+retries. `--streams-limit` accepts 1–25; `--videos-limit` accepts 0–25 (for example,
+10 when upload discovery is wanted). An **emergency bound of 20 full-metadata
+requests** protects abnormal workloads, separately from the one/two listing calls.
+`--max-metadata-requests` accepts 1–100; it is not intended as a routine small quota.
+`--max-enrich` is removed from supplemental commands, but remains on video commands.
+
+The cycle defaults to one shared 600-second network deadline, metadata cap 180,
+comments cap 600 reduced to remaining time, two comment videos and 1,000 comments
+per video. Options remain `--runtime-seconds` (30–600), `--discovery-seconds`
+(30–180), `--comment-seconds` (30–600), `--max-videos` (1–10),
+`--max-comments` (1–1,000), and `--start-date`. Standalone metadata runtime accepts
+30–180 seconds. Components receive absolute deadlines so allowances cannot reset.
+Local bounded SQLite waits, persistence and process cleanup can finish afterward;
+network work cannot start without sufficient allowance.
+
+`state/morning/retry.json` stores **failure evidence only**, not a candidate queue.
+Failures/unusable metadata back off 1 hour, then 6 hours, then 24 hours; success
+clears that ID's failure counter. Valid active status does not create failure
+backoff. Blocking stops remaining requests and establishes a six-hour metadata
+cooldown. Cycles honor metadata and comment cooldowns even in inventory-only mode.
+Invalid or unpersistable safety state fails closed; do not repeatedly invoke after
+blocking. Retry state is atomic, size-bounded to 256 KiB, and independent from the
+video runner's SQLite retry state. It is not a new database or preservation layer.
+
+`forward_coverage.complete` certifies only that the requested bounded heads and
+known forward candidates were checked, not exhaustive channel coverage or terminal
+video status. Backoff, failed listings, failures, emergency limits and deadline
+deferrals explicitly make coverage incomplete, with unattempted/failed IDs.
+Discovery does not report clean success while known current candidates remain
+unchecked. Subsequent cycles recompute remaining work from source evidence.
+
+The November 5 regression includes its previously live daily show, three new mini-
+broadcasts, and the old undated rows that previously consumed both slots. All four
+current videos now receive full metadata under normal bounds; historical rows are
+not requested. A 25-candidate test reaches the emergency bound, reports five
+unattempted IDs, and completes those five on the next cycle.
+
+### Phase isolation, concurrency and reports
+
+Reports retain separate discovery/comments outcomes, reasons, durations, allocated
+budgets, attempts and artifact references. Transient discovery failure or partial
+coverage does not discard independently eligible known-inventory comments. Blocking,
+shared cooldown, unsafe persistence or interruption suppresses later network work.
+A successful comment phase does not turn failed discovery into success, and comment
+failure does not invalidate imported metadata. Operational success does not mean
+exhaustive comment retrieval; all existing coverage/confirmation semantics remain.
+
+Execution takes `state/supplemental/.cycle.lock` nonblockingly. Discovery uses the
+existing shared inventory/media operation lock; comments retain their own locks.
+The media lock is released between phases and never held throughout comment
+retrieval. Active acquisition defers without waiting for an MKV. Morning discovery
+retains its runtime+60-second guard before known 11/14/18/21 Pacific cron firings,
+and 60 seconds afterward. The comment acquisition probe still cannot exclude
+acquisition beginning after the probe. No video lock semantics or cron changed.
+
+Read-only planners use independent SQLite read transactions with one-second busy
+waits. Supplemental inventory writes also use one second; video connections retain
+their original five-second default and comment-store writes their five-second
+bound. Contention defers or fails visibly without unbounded retries. No schema,
+journal or shared-transaction changes are introduced; metadata discovery requires
+an initialized schema-3 inventory.
+
+Execution logs remain `state/morning/last-run.json`, bounded diagnostic slots,
+`state/comments/runner/last-run.json`, and `state/supplemental/last-cycle.json`.
+Metadata diagnostic slots are `enrich-0..99.stderr.log` at most, according to the
+emergency bound; used slots are replaced and unused slots may be older. These are
+latest operational reports, not archive manifests. Immutable source observations,
+comment snapshots and portable collection records remain authoritative. Planning
+creates none of these files. Captions can later be another named phase; no caption
+schema, collector, shared manifest or cross-project integration is implemented.
+
+Cycle exit codes: 0 planning/success/ordinary safety deferral, 2 incomplete or failed
+phases, 75 supplemental overlap, 130 interruption, 1 setup/reporting failure. Phase
+results retain their own codes. Unchecked forward work cannot yield clean success.
+
+The installed unified-cycle jobs below replace the earlier proposed separate
+morning/comment timings. Confirmation eligibility is measured from collection
+completion, not schedule slots: the next scheduled cycle may run later than +24h,
+but never early or after the original cutoff. Archiver owns backup; Indexer owns
+interpretation.
+
+
+## Installed supplemental schedule — November 5, 2026
+
+The existing video cron remains exactly unchanged at 11/14/18/21 Pacific. The five
+entries below use only the unified cycle: discovery Friday 08:35 and weekdays
+09:25/10:15; inventory-only weekends 10:15 and daily 19:30.
+
+```cron
+# BEGIN dls-video-downloader (supplemental cycle)
+35 8 * * 5 cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --discover --max-videos 2 --max-comments 1000 --runtime-seconds 600 --discovery-seconds 180 --comment-seconds 600 --streams-limit 10 --videos-limit 0 --max-metadata-requests 20 --json > /dev/null
+25 9 * * 1-5 cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --discover --max-videos 2 --max-comments 1000 --runtime-seconds 600 --discovery-seconds 180 --comment-seconds 600 --streams-limit 10 --videos-limit 0 --max-metadata-requests 20 --json > /dev/null
+15 10 * * 1-5 cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --discover --max-videos 2 --max-comments 1000 --runtime-seconds 600 --discovery-seconds 180 --comment-seconds 600 --streams-limit 10 --videos-limit 0 --max-metadata-requests 20 --json > /dev/null
+15 10 * * 0,6 cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --max-videos 2 --max-comments 1000 --runtime-seconds 600 --discovery-seconds 180 --comment-seconds 600 --streams-limit 10 --videos-limit 0 --max-metadata-requests 20 --json > /dev/null
+30 19 * * * cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --max-videos 2 --max-comments 1000 --runtime-seconds 600 --discovery-seconds 180 --comment-seconds 600 --streams-limit 10 --videos-limit 0 --max-metadata-requests 20 --json > /dev/null
+# END dls-video-downloader (supplemental cycle)
+```
+
+The Mac's `/etc/localtime` resolves to `America/Los_Angeles`; cron uses that system
+local timezone. No `TZ`/`CRON_TZ` setting or original job environment was changed.
+Local times stay Pacific across PST/PDT: 10:15 corresponds to 18:15 UTC in winter
+and 17:15 UTC in summer. All supplemental times are outside the 2 AM DST change.
+Keep the system timezone Pacific. The 10:15 cycle's 600-second network deadline
+ends by 10:25, leaving 35 minutes before the 11 AM media job, plus ample margin for
+bounded local persistence/cleanup. Existing acquisition locks/cron guards still
+apply; an active long video acquisition causes deferral, not a wait for its MKV.
+
+Each invocation permits at most two comment videos, 1,000 comments each, one shared
+600-second network budget, 180 seconds of metadata, 10 Streams entries, no Videos
+tab scan and the emergency 20 full-metadata ceiling. Inventory-only lines do not
+invoke discovery despite retaining the same explicit limits. State, cooldowns,
+phase independence and publication/confirmation policy remain as documented above.
+
+Stdout JSON is discarded rather than appended to an unbounded cron log. Latest
+bounded operational reports remain under `state/supplemental/`, `state/morning/`
+and `state/comments/runner/`; stderr remains available through normal cron error
+handling. Inspect `last-cycle.json` for a new `started_at`, overall/phase outcomes,
+forward coverage, unattempted IDs, failures, budgets and artifact references.
+Inspect `state/morning/retry.json` and `state/comments/runner/cooldown.json` when
+present. Catalog attempts and portable comment records retain independent source
+history even when later reports replace the latest summary.
+
+Read-only inspection:
+
+```sh
+python3 -B -m dls_video_downloader cycle --json
+python3 -B -m dls_video_downloader status --json
+```
+
+Read the latest execution report directly for actual scheduled results; planning
+is not execution evidence. Check report freshness and cron stderr/mail if the
+report remains stale. To establish successful unattended operation, observe new
+reports starting at installed times, inspect both phases and coverage/cooldowns,
+verify any new portable artifacts, and check independent video cron success.
+The successful November 5 live cycle was supervised, not scheduled. No future
+scheduled firing was awaited or manually triggered during installation.
+
+To disable supplemental work, use `crontab -e` and remove only the exact block
+between `# BEGIN dls-video-downloader (supplemental cycle)` and its matching END.
+Leave the original verified-forward-acquisition block and every other entry intact.
+The private pre-supplemental backup is:
+
+```text
+/Users/alejandroveloz/.local/state/dls-video-downloader/cron-backups/crontab-before-supplemental-20261105T181733Z.txt
+```
+
+It is mode 0600 and contains unrelated configuration: keep it outside Git and do
+not display its contents. Prefer removing only the supplemental block over a full
+restore that could discard later unrelated edits. No new daemon/wrapper, caption
+collector, backfill, UI, shared archive manifest or cross-project integration was
+installed. Future captions will be an independent asset/phase within this cycle.

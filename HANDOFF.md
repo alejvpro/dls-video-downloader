@@ -1,6 +1,38 @@
 # DLS video downloader handoff
 
-## Current baseline — November 3, 2026
+## Production supplemental rollout — November 5, 2026
+
+Unified supplemental cycles are committed and scheduled alongside the unchanged
+11/14/18/21 Pacific video runner. Discovery-enabled cycles run Friday 08:35 and
+Monday–Friday 09:25/10:15; inventory-only cycles run weekends 10:15 and daily 19:30.
+The Mac is America/Los_Angeles; system-local cron follows PST/PDT without changing
+other job environments. Exact installed lines, backup/disable instructions and
+operational inspection are in RUNNER.md. Only one unified cycle command is used.
+
+Defaults/explicit cron bounds: two comment videos, 1,000 comments each, shared 600s,
+metadata cap 180s, Streams 10, Videos 0, emergency 20 full-metadata requests. Default
+`cycle` is still read-only; live work requires `--execute`, with `--discover` for
+metadata. Components preserve independent phases/assets and remain separate from
+MKV acquisition. Existing classification/comment policy, 24h confirmation and
+publication +15d hard cutoff are unchanged. No captions or backfill are implemented.
+
+The corrected supervised live test refreshed November 5 `tNzL9c4FmXM` first and
+observed full `was_live` completion, enriched all three pending forward IDs, kept
+historical undated backlog out, and preserved 159 October 28 comments including two
+IrishWeegee comments. Independent JSON checks passed; no media/decision changes.
+All 383 offline tests pass. That was supervised evidence, not unattended evidence.
+
+Rollout does not force another live cycle or wait for a scheduled firing. Inspect
+new `state/supplemental/last-cycle.json` timestamps and both phase outcomes after
+the first scheduled invocations, plus coverage, cooldowns and portable artifacts.
+Reports are bounded/latest; original observations and comment history remain in
+their established stores. Stdout goes to /dev/null, stderr to normal cron error
+handling; stale reports require investigation. Known media-probe race and bounded
+listing coverage remain. Earlier sections retain phase history, superseded by this
+rollout summary and the current forward-enrichment contract in RUNNER.md.
+
+
+## Historical media baseline — November 3, 2026
 
 The downloader is operating through cron on the Apple Silicon Mac mini (macOS Ventura 13.2.1). Read-only status reports **eight verified acquisitions**, 417 video identities, 694 metadata observations and four persistent manual decisions. These counts are a snapshot, not fixed expectations. Acquired content covers the October 26–30 and November 2–3 daily shows, plus October 30's The Club. The latest inspected scheduled run, November 3 at 2 p.m. Pacific, succeeded; no forward downloads or retry records are pending.
 
@@ -10,7 +42,7 @@ Existing checkpoints:
 - `139ca8dbf08d81647039a31b023fdbf8c5b4ef39`: unattended-operation safeguards.
 - `69ecd6ca0804872f897f7cafdfb1c29ce9c12bbc`: acquisition naming and active cron documentation.
 
-There is no Git remote. The offline suite currently contains 226 tests, including 30 comment-store, 25 manual-collector and 89 refresh-policy tests using synthetic data, disposable stores and tiny local subprocesses.
+There is no Git remote. The current offline suite contains 383 tests using synthetic data, disposable stores and tiny local subprocesses. Earlier counts below describe historical milestones.
 
 ## Architecture and operations
 
@@ -50,7 +82,7 @@ The downloader acquires media and preserves source observations without interpre
 
 ## Next priorities — separate authorized phases
 
-1. **Preserve YouTube comments.** The independent [manual collector, store and offline refresh policy](COMMENTS.md) support `comments collect VIDEO_ID` and pure deterministic `evaluate_refresh` decisions. The collector retains its 1,000-comment cap, newest-first sorting, zero retries, explicit runtimes, bounded pipes/timeouts and comment-only lock. Snapshots/schema remain version 1. Forward age uses original YouTube publication evidence. Until IrishWeegee is observed, collect initially, daily through day 7, then once during day 14. First positive observation instead schedules one +24-hour confirmation, then early completion; no text edits or later absence restart monitoring. All automatic work stops before day 15, including bounded recovery. Read-only planning and explicitly requested bounded execution are now implemented (see below); no unattended scheduling is installed. Historical comment backfill remains a separate future workflow; do not weaken the cutoff or parse comments into chapters.
+1. **Preserve YouTube comments.** The independent [manual collector, store and offline refresh policy](COMMENTS.md) support `comments collect VIDEO_ID` and pure deterministic `evaluate_refresh` decisions. The collector retains its 1,000-comment cap, newest-first sorting, zero retries, explicit runtimes, bounded pipes/timeouts and comment-only lock. Snapshots/schema remain version 1. Forward age uses original YouTube publication evidence. Until IrishWeegee is observed, collect initially, daily through day 7, then once during day 14. First positive observation instead schedules one +24-hour confirmation, then early completion; no text edits or later absence restart monitoring. All automatic work stops before day 15, including bounded recovery. Read-only planning and explicitly requested bounded execution are now implemented (see below); supplemental scheduling is installed as documented above. Historical comment backfill remains a separate future workflow; do not weaken the cutoff or parse comments into chapters.
 2. **Local admin interface.** Build a localhost-only browser interface showing recent acquisitions with titles, verified publication dates, YouTube IDs, acquisition timestamps and verification status, plus failures, retries and pending work. Include ambiguous-video Review queues with Keep, Skip and Clear Decision; retain reversible decision history and support search, filtering and past-decision review. Eventually show comment collection status. Direct YouTube-hosted thumbnail URLs are acceptable; no local image cache is necessary. No interface exists yet.
 3. **Historical backfill.** Work backward before October 26, 2026 toward the channel's earliest uploads around June 2021, using bounded date ranges. Reuse inventory, classifications and decisions; review uncertain historical material before downloading. Keep backfill independent from ongoing cron acquisition and never overwrite verified forward acquisitions. Historical publishing formats need evidence-based rules; no backfill workflow exists yet.
 
@@ -176,3 +208,152 @@ and deferred seven by budget. All 68 baseline inventory/acquisition/comment file
 retained their SHA-256 hashes, no production runner tree was created, and the cron
 hash was unchanged. No live extraction occurred. These are validation observations,
 not fixed candidate counts for future invocations.
+
+## Morning metadata discovery milestone (pre-rollout history)
+
+`discover-morning [--json]` is implemented and tested offline. It is an explicit
+network/inventory-writing command; it has NOT been invoked on production.
+Defaults: Streams head 5, Videos disabled, full enrichment 2, total budget 180s.
+Configurable bounds: Streams 1–25, Videos 0–25, enrichments 0–4, runtime 30–180s.
+
+Discovery now exposes shared metadata-command, channel-validation and candidate
+priority helpers; regular video workflow behavior is preserved. The morning path
+uses those helpers and the existing importer/classifier, omits flat live-status
+claims, and verifies completion using full metadata. Unknown/contradictory status
+is explicit; source timestamps and prior observations remain preserved. A completed
+selected daily show becomes visible to the existing read-only comment planner
+without an MKV. Club uploads remain uploads, and short Friday shows have no fixed
+minimum duration. No comment or media acquisition is invoked.
+
+The existing shared operation lock is acquired nonblockingly before opening the
+inventory for writes. Known video cron firings have a runtime+60s pre-start guard
+and 60s post-firing guard; the video runner and cron are unchanged. Morning holds
+the shared lock for its bounded metadata pass. A manual acquisition started after
+that lock is taken can still defer; stronger priority coordination is not added.
+No cleanup, retry-state/frontier updates, decision seeding, overlap receipts or
+regular run-history pruning occurs. Morning status checks are bounded independently
+of old media enrichment retries. Blocking stops additional requests; no retries.
+
+Latest bounded summaries/diagnostics live under `state/morning/` when the command
+is eventually executed. Existing source observations remain in inventory. See
+RUNNER.md for flags, logs, exit codes, timing assumptions and proposed schedules.
+Do not run live discovery, write production inventory or install cron without
+separate approval. Comment planning/execution and morning discovery remain separate.
+Historical backfill, captions, admin UI and Archiver integration remain out of scope.
+
+The supervised comment runner validation preceding this milestone preserved 140
+comments for `MbO7y_90zUI`, including IrishWeegee; its next confirmation is eligible
+November 6 at 07:22:31.604536 UTC (November 5, 11:22 PM Pacific). This milestone does
+not collect it or change any comment artifacts. Earlier offline-only validation
+counts above describe their respective historical checkpoints.
+
+Morning milestone verification: 32 new offline tests and all 325 total tests pass,
+including existing regular discovery/acquisition coverage. All 72 baseline protected
+inventory/acquisition/comment files retain their hashes; cron is unchanged and no
+production `state/morning/` directory was created. No live discovery, collection,
+media download, staging or commit was performed. One supervised live metadata pass
+still needs separate authorization and should validate that the small channel-head
+and enrichment budgets reach the current show before scheduling is considered.
+
+## Unified supplemental cycle milestone (pre-rollout history)
+
+Preserves all earlier uncommitted morning-discovery work. `cycle` defaults to
+read-only planning, `cycle --execute` performs inventory-only comment execution,
+and `cycle --execute --discover` authorizes bounded metadata refresh followed by
+independent due comments. `--discover` without execution is rejected. No live
+cycle execution is authorized or performed during this milestone.
+
+The thin orchestrator delegates to morning discovery, the comment planner/policy
+and bounded comment runner. Reports retain separate named phase outcomes, budgets,
+durations and artifact references; a transient discovery failure can coexist with
+successful known-inventory comments. Blocking/cooldown or interruption stops later
+network work. No phase rewrites asset histories, publication policy or selections.
+Future captions can be another named phase; no caption implementation is present.
+
+One 600-second default absolute deadline spans phases (discovery cap 180 seconds,
+comments cap 600 seconds, reduced to remaining allowance). Existing per-phase
+process limits and source-age cutoff remain. A nonblocking supplemental lock and
+existing component locks prevent overlapping work; the media lock is not held
+through comment collection or the whole cycle. Acquisition stays independent.
+
+Morning status priority now includes unresolved branded daily-show IDs from known
+inventory even outside the small channel head. The existing classifier supplies
+priority hints only, never fabricated completion. Successful live refreshes move
+behind less recently checked daily candidates. Full verified status is still
+required for daily comment eligibility. Regular video acquisition/discovery rules
+and defaults are unchanged.
+
+Inventory connection API now accepts an optional timeout, retaining the existing
+five-second default for the video runner. Supplemental inventory and read-only
+comment planning use one-second busy waits. Existing comment-store writes retain
+their five-second bound. Contention tests verify committed reads, deferred writes,
+rollback/integrity and independent comment writes. No schema/journal migration or
+shared database is added; morning discovery requires existing schema 3.
+
+Execution-only latest reports live under `state/supplemental/`; default planning
+creates no operational files. See RUNNER.md and COMMENTS.md for modes and safety
+contracts. No cron changes, new live requests, captions, UI, historical backfill,
+Archiver integration or commits are part of this milestone. Next step requires
+separate approval for one supervised bounded cycle test.
+
+Cycle verification: 42 new cycle tests and all 367 offline tests pass. This includes
+real SQLite reserved/exclusive contention, bounded waits, rollback/integrity, safe
+retry, failure isolation, phase deadlines, cancellation and preservation fixtures.
+Read-only production planning reported eight due IDs, initially selecting
+`wUrudRrP-OY` and `IX9Dv4cBUKg`; cached `tNzL9c4FmXM` remained live/Review and
+excluded. No fresh status was claimed. All 75 protected production files retained
+their hashes, no supplemental directory was created, and cron was unchanged.
+These are validation observations, not fixed future candidate counts.
+
+
+## Comprehensive forward metadata refinement (pre-rollout history)
+
+Supersedes the older morning/cycle slot and priority descriptions above. The live
+cycle found 69 priority candidates, including old undated flat `was_live` rows;
+two historical IDs consumed the slots and November 5 was not freshly checked.
+That live test's observations/artifacts are preserved; no rollback occurred.
+
+Supplemental metadata now attempts every pending forward ID once per pass, without
+hypothetical-classification ranking or routine small enrichment quotas. Forward
+scope uses reliable recent publication (15 days bounded by the forward start),
+current/recent bounded-head presentation, or recent full active status when undated.
+Legacy first_seen/title dates/flat completed labels do not admit historical rows.
+Known old publication wins over a recent listing. Old incomplete records remain
+preserved historical backlog with count/sample reporting, not automatic backfill.
+
+The existing sources table records `morning:live` / `morning:videos` provenance,
+alongside original Live/Videos sources. This is presentation evidence, not a queue
+or publication timestamp, and keeps unfinished current work recognizable after head
+changes. The optional importer provenance argument leaves video-runner calls and
+classification/manual decisions unchanged. No schema or database is added.
+
+Defaults: Streams 10, Videos 0, emergency 20 full-metadata requests, per-request 60s,
+metadata total 180s, cycle total 600s. `--max-metadata-requests` replaces supplemental
+`--max-enrich`; regular video commands retain their existing flag and behavior.
+All four current videos in the November 5 + three mini-broadcast fixture are checked
+within normal bounds, with historical undated rows untouched. Completed adequately
+verified metadata is reused; live/upcoming/post-live status refreshes next cycle.
+
+`forward_coverage` reports incomplete work after deadline/emergency/backoff/failure.
+Failure-only atomic retry state is under `state/morning/retry.json`: 1h/6h/24h
+backoff, six-hour blocking cooldown, no same-cycle retry. Cycles honor metadata and
+comment cooldowns, including inventory-only execution. Safety-state errors suppress
+further network work. No video retry state, source artifacts or comment policy is
+changed. See RUNNER.md for the complete current command/scope contract.
+
+This refinement is offline only. No YouTube execution, production writes, cron,
+commits, caption work, backfill, UI or Archiver integration are authorized here.
+
+Forward-refinement verification: all 383 offline tests pass (16 net new regression
+cases plus updated slot-era tests). Fixtures use explicit clocks for inventory
+imports as well as policy evaluation. They cover the November 5 + three minis,
+historical flat-only separation, all four checks within normal bounds, status
+transitions, idempotence, partial failure/recovery, backoff/blocking, emergency
+coverage/resume, head displacement and cross-tab deduplication. Read-only retained-
+inventory scope analysis finds only `tNzL9c4FmXM` pending, with historical metadata
+backlog separate. This is cached evidence, not a fresh live-status check.
+
+All 80 protected production files retained their baseline hashes, cron remained
+unchanged, and no production metadata retry file was created. No live requests,
+production writes, staging or commits occurred. The corrected forward path still
+requires separately authorized supervised live validation before scheduling.

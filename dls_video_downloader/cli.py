@@ -52,6 +52,27 @@ def main(argv=None):
     collect.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
     collect.add_argument("--max-comments", type=int, default=1000)
     collect.add_argument("--timeout-seconds", type=int, default=600)
+    morning = commands.add_parser("discover-morning", help="Bounded metadata-only morning discovery/status; writes inventory")
+    morning.add_argument("--streams-limit", type=int, default=10)
+    morning.add_argument("--videos-limit", type=int, default=0)
+    morning.add_argument("--max-metadata-requests", type=int, default=20, help="Emergency full-metadata safety bound; normal forward scope is comprehensive")
+    morning.add_argument("--runtime-seconds", type=int, default=180)
+    morning.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
+    morning.add_argument("--json", action="store_true")
+    cycle = commands.add_parser("cycle", help="Supplemental discovery/comments; read-only unless --execute")
+    cycle.add_argument("--execute", action="store_true")
+    cycle.add_argument("--discover", action="store_true", help="Also authorize metadata discovery; requires --execute")
+    cycle.add_argument("--json", action="store_true")
+    cycle.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
+    cycle.add_argument("--runtime-seconds", type=int, default=600)
+    cycle.add_argument("--discovery-seconds", type=int, default=180)
+    cycle.add_argument("--comment-seconds", type=int, default=600)
+    cycle.add_argument("--streams-limit", type=int, default=10)
+    cycle.add_argument("--videos-limit", type=int, default=0)
+    cycle.add_argument("--max-metadata-requests", type=int, default=20, help="Emergency full-metadata safety bound")
+    cycle.add_argument("--max-videos", type=int, default=2)
+    cycle.add_argument("--max-comments", type=int, default=1000)
+    cycle.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
     importer = commands.add_parser("import", help="Import local JSON only")
     importer.add_argument("--live")
     importer.add_argument("--videos")
@@ -90,6 +111,42 @@ def main(argv=None):
         command.add_argument("--json", action="store_true")
         command.add_argument("--details", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "cycle":
+        if args.discover and not args.execute:
+            parser.error("--discover requires --execute; default cycle is read-only")
+        from .supplemental_cycle import run, render
+        from .comment_collection import safe_diagnostic
+        try:
+            result = run(args.db,args.store_root,execute=args.execute,discover=args.discover,
+                         runtime_seconds=args.runtime_seconds,discovery_seconds=args.discovery_seconds,
+                         comment_seconds=args.comment_seconds,streams_limit=args.streams_limit,
+                         videos_limit=args.videos_limit,max_metadata_requests=args.max_metadata_requests,
+                         max_videos=args.max_videos,max_comments=args.max_comments,start=args.start_date)
+            print(json.dumps(result,ensure_ascii=False,indent=2) if args.json else render(result))
+            return result["exit_code"]
+        except KeyboardInterrupt:
+            print("Supplemental cycle interrupted",file=sys.stderr)
+            return 130
+        except Exception as exc:
+            print(f"Supplemental cycle failed: {safe_diagnostic(exc)}",file=sys.stderr)
+            return 1
+    if args.command == "discover-morning":
+        from .morning_discovery import discover, render
+        from .operations import safe_text
+        try:
+            result = discover(args.db, streams_limit=args.streams_limit, videos_limit=args.videos_limit,
+                              max_metadata_requests=args.max_metadata_requests, runtime_seconds=args.runtime_seconds, start=args.start_date)
+            print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result))
+            return result["exit_code"]
+        except OperationBusy as exc:
+            print(safe_text(str(exc)), file=sys.stderr)
+            return 75
+        except KeyboardInterrupt:
+            print("Morning discovery interrupted", file=sys.stderr)
+            return 130
+        except Exception as exc:
+            print(f"Morning discovery failed: {safe_text(str(exc))}", file=sys.stderr)
+            return 1
     if args.command == "comments" and args.comment_command == "run":
         from .comment_runner import run, render
         from .comment_collection import safe_diagnostic

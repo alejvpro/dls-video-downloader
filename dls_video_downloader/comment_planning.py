@@ -59,10 +59,10 @@ def plan(inventory_path, comment_root=PROJECT / "state/comments", *, now,
     now = instant(now)
     start = date.fromisoformat(start).isoformat()
     catalog = Path(comment_root) / "comments.sqlite3"
-    with closing(connect(inventory_path, readonly=True)) as inventory:
+    with closing(connect(inventory_path, readonly=True, timeout=1)) as inventory:
         inventory.execute("BEGIN")
         if catalog.exists():
-            with closing(sqlite3.connect(catalog.resolve().as_uri() + "?mode=ro", uri=True)) as comments:
+            with closing(sqlite3.connect(catalog.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as comments:
                 comments.row_factory = sqlite3.Row
                 comments.execute("PRAGMA query_only=ON")
                 comments.execute("BEGIN")
@@ -126,6 +126,8 @@ def _plan(inventory, comments, now, start, cooldown):
                       "age_anchor": decision.anchor, "age_anchor_field": field or "first_seen",
                       "age_anchor_precision": precision, "age_anchor_provenance": provenance.get(field),
                       "first_observed_at": row["first_seen"],
+                      "inventory_live_status": metadata.get("live_status"),
+                      "inventory_live_status_provenance": provenance.get("live_status"),
                       "first_completed_observation": ({"observed_at": completed["observed_at"], "imported_at": completed["imported_at"]} if completed else None),
                       "source_timing": {k: {"value": metadata[k], "provenance": provenance.get(k)}
                                         for k in ("release_timestamp", "timestamp", "release_date", "upload_date") if k in metadata},

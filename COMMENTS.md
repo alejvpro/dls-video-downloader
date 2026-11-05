@@ -3,8 +3,9 @@
 `dls_video_downloader.comments.CommentStore` stores **yt-dlp-extracted comment
 objects**, not raw YouTube API responses. An independent manual collector retrieves
 one explicit video's comments and submits them to this store. A bounded runner
-can select and execute due work when explicitly requested; no unattended collection
-or scheduling is installed. The existing media runner does not invoke comment collection. Offline tests use
+can select and execute due work when explicitly requested or through the installed
+unified supplemental cycle. The existing media runner does not invoke comment
+collection. Offline tests use
 synthetic objects and disposable stores. A pure offline refresh policy is also
 implemented; it evaluates supplied history but does not collect or schedule work.
 
@@ -520,7 +521,8 @@ exhaustive retrieval or permanent comment unavailability.
 `due_ids` orders due work by oldest due time, with initial collections winning
 ties. This is a plan, not execution authorization. The bounded runner described
 below refreshes inputs, checks deadlines, applies budgets and honors its independent
-cooldown. Morning discovery, unattended scheduling and backfill remain unimplemented.
+cooldown. Forward discovery and unified supplemental scheduling are implemented;
+historical backfill remains unimplemented.
 Manual collection remains available independently.
 
 ## Independent bounded comment runner
@@ -606,8 +608,93 @@ snapshot, linked by the report. Those estimates are not exact posting/edit times
 YouTube `timestamp` is not asserted to be broadcast end. No timing analytics,
 comment interpretation or duplicate source-data database was added.
 
-This milestone validates execution offline only, using disposable catalogs and
-mocked extraction. No production runner execution or additional live comment
-collection has been performed. No comment cron, morning discovery, backfill,
-Indexing or Archiver integration is installed. A separately approved live bounded
-test is the next step.
+Initial execution validation used disposable catalogs and mocked extraction.
+Subsequent supervised live validations succeeded; the installed unified-cycle
+schedule is documented in RUNNER.md. No separate comment/metadata cron, backfill,
+Indexer or Archiver integration is installed. Scheduled success requires fresh
+execution evidence; supervised success alone does not establish it.
+
+## Morning metadata integration
+
+`discover-morning` is now an offline-tested, separately invoked metadata-writing
+workflow. See RUNNER.md for limits, shared-lock/cron guards and the proposed
+9:15 AM weekday / 8:30 AM Friday discovery passes. It shares the normal inventory
+importer and classification rules, but does not call the cleanup/acquisition
+workflow or the comment runner. Full validated completion evidence updates the
+same inventory that `comments plan` already reads; no media acquisition or planner
+schema/API change is needed.
+
+The operations remain separate: regular `run` discovers/acquires media;
+`discover-morning` only imports bounded metadata; `comments plan` is read-only;
+`comments run` is dry-run unless explicit execution is requested. The installed
+unified-cycle schedule coordinates supplemental operations. Morning discovery cannot bypass
+classification/manual decisions, original publication age, confirmation timing or
+the day-15 cutoff. It does not write the comment store or trigger the pending
+October 26 confirmation. This milestone makes no live YouTube requests.
+
+## Supplemental-cycle coordination
+
+`cycle` provides read-only planning by default; `cycle --execute` runs due comments
+from existing inventory; `cycle --execute --discover` first performs bounded morning
+metadata refresh. `--discover` alone is invalid. See RUNNER.md for all options,
+phase outcomes, budgets, lock/SQLite behavior and report paths. Execution capability passed offline and supervised live validation. Unattended
+execution remains to be verified from actual scheduled reports. Existing standalone comment commands remain supported.
+
+The cycle delegates all preservation to the existing collector/store. Original
+comment objects/text, hashes, immutable JSON snapshots, portable collection records,
+coverage uncertainty and version history are unchanged. The existing evaluator
+still enforces confirmation, backoff and the original publication-age cutoff, even
+after discovery failures. A successful phase is not exhaustive retrieval; one
+phase's failure does not invalidate another asset or reset its history.
+
+Planning reads cached status and field provenance without claiming fresh YouTube
+knowledge. Inventory reads use a one-second bounded busy wait, while existing
+comment-store writes retain their bounded five-second wait. No shared media/comment
+transaction, database, preservation manifest, analytics index or caption schema is
+introduced. Cycles remain lightweight and independent from MKV acquisition.
+
+
+## Forward-enrichment refinement
+
+Discovery-enabled cycles now attempt every pending current/recent forward metadata
+candidate before comment evaluation, subject to time, emergency workload bounds,
+locks and backoff. The old two/four enrichment-slot model and historical priority
+ranking are removed. Defaults are 10 Streams entries and an emergency 20 full-
+metadata requests, with the existing 180-second metadata / 600-second cycle network
+budgets. Optional Videos discovery applies the same comprehensive rules to uploads.
+Use `--max-metadata-requests`, not supplemental `--max-enrich`.
+
+Old undated flat-only records outside the recent heads remain historical backlog.
+Recent bounded-listing provenance in the existing inventory prevents unfinished
+current entries from being lost when newer mini-broadcasts move them off the head.
+Failure/cooldown evidence lives in a small `state/morning/retry.json`, not a queue or
+new database. Cycle planning reads both metadata/comment cooldowns without writes.
+
+`forward_coverage.complete=False` exposes deferred/unattempted/failed metadata work;
+comments using independent valid inventory evidence may still succeed unless a
+shared safety condition blocks them. No classification, comment refresh, identity,
+text-preservation, snapshot or historical observation policy changed. See RUNNER.md
+for scope admission, reliable completion, bounds and retry details. The corrected refinement passed supervised live validation; earlier artifacts
+remain preserved.
+
+
+## Supplemental scheduling activated
+
+The installed unified cycle runs discovery Friday 08:35 and weekdays 09:25/10:15,
+plus inventory-only weekends 10:15 and daily 19:30, all America/Los_Angeles local
+time with DST. See RUNNER.md for the exact five cron lines, limits, private backup
+and how to disable only this supplemental block. Video cron entries are unchanged.
+No cycle was manually executed to validate installation, and unattended success
+has not yet been established.
+
+Comment rules are unchanged: missing-target checks initially/daily through day 7,
+pause days 8–13, final day-14 opportunity; first IrishWeegee detection instead
+permits one confirmation at/after +24h from collection finish, with bounded recovery.
+All automatic work stops at original publication +15 days. Actual confirmation may
+wait for the next scheduled slot. Manual collection remains independent at any age.
+Successful scheduling/collection does not prove exhaustive comments or deletion.
+
+Inspect the latest phase reports and artifact references, not only overall exit
+status. Immutable snapshots, portable collection records and catalog history remain
+independent assets. Future caption preservation joins the cycle as another phase;
+no caption collector, schema or interpretation/indexing is implemented.

@@ -28,13 +28,13 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
 
 
-def connect(path, readonly=False):
+def connect(path, readonly=False, *, timeout=5):
     path = Path(path).resolve()
     if readonly:
-        db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=timeout)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(path)
+        db = sqlite3.connect(path, timeout=timeout)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys=ON")
     version = db.execute("PRAGMA user_version").fetchone()[0]
@@ -149,11 +149,19 @@ def import_file(db, filename, source):
     return import_document(db, document, source, str(filename), digest)
 
 
-def import_document(db, document, source, input_name, digest=None):
+def import_document(db, document, source, input_name, digest=None, *, source_alias=None):
     """Import in-memory extraction results using the same observation rules."""
+    if source_alias is not None and source_alias not in ('morning:live', 'morning:videos'):
+        raise ValueError("Unsupported bounded-listing source alias")
     filename = input_name
     digest = digest or hashlib.sha256(encoded(document).encode()).hexdigest()
     if db.execute("SELECT 1 FROM imports WHERE digest=? AND source=?", (digest, source)).fetchone():
+        if source_alias:
+            epoch = document.get('epoch')
+            seen = datetime.fromtimestamp(epoch, timezone.utc).isoformat() if isinstance(epoch, (int, float)) else now()
+            for entry in document.get('entries', [document]):
+                db.execute("INSERT INTO sources VALUES(?,?,?,?) ON CONFLICT(video_id,source) DO UPDATE SET last_seen=excluded.last_seen", (entry['id'], source_alias, seen, seen))
+            reclassify(db)
         return {"file": str(filename), "unchanged": True, "new_observations": 0}
     entries = document.get("entries") if isinstance(document, dict) else None
     flat = entries is not None
@@ -193,6 +201,8 @@ def import_document(db, document, source, input_name, digest=None):
         cursor = db.execute("INSERT OR IGNORE INTO observations(video_id,detail,digest,metadata,observed_at,imported_at) VALUES(?,?,?,?,?,?)", (video_id, detail, observation_digest, payload, observed_at, imported_at))
         count += cursor.rowcount
         db.execute("INSERT INTO sources VALUES(?,?,?,?) ON CONFLICT(video_id,source) DO UPDATE SET last_seen=excluded.last_seen", (video_id, source, imported_at, imported_at))
+        if source_alias:
+            db.execute("INSERT INTO sources VALUES(?,?,?,?) ON CONFLICT(video_id,source) DO UPDATE SET last_seen=excluded.last_seen", (video_id, source_alias, observed_at, observed_at))
     db.execute("INSERT INTO imports VALUES(?,?,?,?,?)", (digest, source, str(filename), imported_at, len(entries)))
     reclassify(db)
     return {"file": str(filename), "unchanged": False, "entries": len(entries), "new_observations": count}

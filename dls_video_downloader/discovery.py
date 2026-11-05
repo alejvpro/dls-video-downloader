@@ -25,6 +25,46 @@ def compact(document, flat=False):
     return result
 
 
+def metadata_command():
+    """Shared metadata-only extraction flags; no configuration or media writes."""
+    return [media.YT_DLP, "--ignore-config", "--no-cache-dir", "--skip-download",
+              "--ffmpeg-location", media.FFMPEG,
+              "--js-runtimes", "node:" + media.NODE, "--no-write-comments", "--no-write-subs",
+              "--no-write-auto-subs", "--no-write-thumbnail", "--no-write-info-json",
+              "--socket-timeout", "30", "--retries", "0", "--extractor-retries", "0", "--dump-single-json"]
+
+
+def channel_entries(document, limit):
+    """Validate the official channel and bounded listing before inventory import."""
+    entries = document.get("entries")
+    if document.get("channel_id") != CHANNEL or not isinstance(entries, list) or len(entries) > limit:
+        raise ValueError("Unexpected channel identity or unbounded/missing playlist entries")
+    return entries
+
+
+def enrichment_candidates(db, positions, items, verified, start, *, honor_retries=True):
+    """Existing bounded discovery priority, shared with morning metadata scans."""
+    enrich, deferred = [], []
+    for video_id, position in positions.items():
+        item = items[video_id]
+        live = db.execute("SELECT 1 FROM sources WHERE video_id=? AND source='live'", (video_id,)).fetchone()
+        if item['publication_date'] and item['publication_date'] < start:
+            continue
+        pending = retry_pending(db, video_id, 'enrichment') if honor_retries else None
+        if pending:
+            deferred.append(pending)
+            continue
+        if video_id not in verified and item["decision"] not in ("reject", "skip") and (
+                item["decision"] == "approve" or item["classification"] in ("daily_show", "the_club")
+                or (live and item["classification"] == "review")):
+            enrich.append((position, video_id))
+    enrich.sort()
+    first_daily = next((entry for entry in enrich if items[entry[1]]['classification'] == 'daily_show'), None)
+    first_club = next((entry for entry in enrich if items[entry[1]]['classification'] == 'the_club'), None)
+    preferred = [entry for entry in (first_daily, first_club) if entry]
+    return preferred + [entry for entry in enrich if entry not in preferred], deferred
+
+
 def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_limit=75,
              max_enrich=8, max_downloads=2, start=DEFAULT_START, only_id=None, state=None,
              stale_hours=72, retry_base_minutes=60, retry_max_hours=24):
@@ -75,11 +115,7 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         event("failure", **item)
 
     with run_record(db, state, result):
-        common = [media.YT_DLP, "--ignore-config", "--no-cache-dir", "--skip-download",
-                  "--ffmpeg-location", media.FFMPEG,
-                  "--js-runtimes", "node:" + media.NODE, "--no-write-comments", "--no-write-subs",
-                  "--no-write-auto-subs", "--no-write-thumbnail", "--no-write-info-json",
-                  "--socket-timeout", "30", "--retries", "0", "--extractor-retries", "0", "--dump-single-json"]
+        common = metadata_command()
         result['cleanup'] = cleanup_staging(db, state, execute=True, retention_hours=stale_hours)
         event('cleanup', files=len(result['cleanup']['files']), bytes=result['cleanup']['bytes'])
         before = {r[0] for r in db.execute("SELECT id FROM videos")}
@@ -89,9 +125,7 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
             try:
                 document = json.loads(media.run(common + ["--flat-playlist", "--playlist-end", str(limit),
                     f"https://www.youtube.com/channel/{CHANNEL}/{tab}"], directory / f"{source}.stderr.log", 300))
-                entries = document.get("entries")
-                if document.get("channel_id") != CHANNEL or not isinstance(entries, list) or len(entries) > limit:
-                    raise ValueError("Unexpected channel identity or unbounded/missing playlist entries")
+                entries = channel_entries(document, limit)
                 with db:
                     imported = import_document(db, compact(document, flat=True), source, f"channel:{CHANNEL}/{tab}")
                 result["encountered"][source] = len(entries)
@@ -114,27 +148,8 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         items = {i["id"]: i for i in report(db, start)["items"]}
         result["new_ids"] = sorted(set(positions) - before)
         verified = {r[0] for r in db.execute("SELECT video_id FROM acquisitions")}
-        enrich = []
-        for video_id, position in positions.items():
-            item = items[video_id]
-            live = db.execute("SELECT 1 FROM sources WHERE video_id=? AND source='live'", (video_id,)).fetchone()
-            if item['publication_date'] and item['publication_date'] < start:
-                continue
-            pending = retry_pending(db, video_id, 'enrichment')
-            if pending:
-                result['retry_deferred'].append(pending)
-                continue
-            if video_id not in verified and item["decision"] not in ("reject", "skip") and (
-                    item["decision"] == "approve" or item["classification"] in ("daily_show", "the_club")
-                    or (live and item["classification"] == "review")):
-                enrich.append((position, video_id))
-        enrich.sort()
-        # Reserve the first opportunities for a daily show and a Club upload;
-        # a large flat backlog on either tab cannot starve the other program.
-        first_daily = next((entry for entry in enrich if items[entry[1]]['classification'] == 'daily_show'), None)
-        first_club = next((entry for entry in enrich if items[entry[1]]['classification'] == 'the_club'), None)
-        preferred = [entry for entry in (first_daily, first_club) if entry]
-        enrich = preferred + [entry for entry in enrich if entry not in preferred]
+        enrich, deferred = enrichment_candidates(db, positions, items, verified, start)
+        result['retry_deferred'].extend(deferred)
         enriched_metadata = {}
         failed_enrichment = set()
         for _, video_id in enrich[:max_enrich]:
