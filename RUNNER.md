@@ -395,3 +395,17 @@ are not destructively interrupted. Expired cooldown requires a separately
 approved coordinated metadata probe, never automatic per-job probes.
 Read `youtube-safety status --json` and the immutable event journal; follow the
 [shared operational guide](YOUTUBE-SAFETY.md). Keep cron paused through review.
+
+## Explicit operational alert delivery (not scheduled)
+
+The [DLS Pushover adapter](NOTIFICATIONS.md) consumes supported shared-safety
+journal events. `notifications plan/status/run` are read-only by default; delivery
+requires `--execute`. No media/supplemental runner invokes it automatically, and
+provider failures cannot block archival evidence. All six existing DLS jobs remain
+paused. Credentials are external/private and have not been accessed or provisioned
+by this milestone. One separately authorized connectivity test precedes rollout.
+
+The first supervised Pushover connectivity test was accepted and independently
+confirmed on the iPhone. Private configuration is provisioned; checkpoint/status
+operations do not access credentials. No notification schedule or automatic
+incident delivery is enabled, and all six DLS cron entries remain paused.

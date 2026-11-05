@@ -155,5 +155,9 @@ incomplete recovery and unresolved review points. New incidents/recovery/manual
 review transitions are alertable; related observations do not repeatedly alert.
 `review_overdue` is available without writes; an explicit `review-events` tick
 materializes one deduplicated review event. A future adapter can retain its own
-last-delivered sequence/event IDs and consume immutable records. No notification
-transport, delivery credentials, Pushover, Healthchecks, email or webhook exists.
+last-delivered sequence/event IDs and consume immutable records. An explicitly
+invoked, offline-tested [Pushover adapter](NOTIFICATIONS.md) now
+consumes these events independently. One supervised connectivity message was
+accepted and its iPhone receipt confirmed; no unattended incident delivery is
+active. No unattended notification schedule, Healthchecks, email
+or webhook integration exists. Notification results never alter this journal.

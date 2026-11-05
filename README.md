@@ -141,3 +141,8 @@ Installed supplemental jobs do not enable captions.
 All DLS cron jobs are currently paused. [Shared YouTube safety](YOUTUBE-SAFETY.md)
 now gates every network workflow; cooldown expiry does not automatically resume
 requests or cron. Inspection is read-only and recovery requires explicit approval.
+
+[DLS Pushover alerts](NOTIFICATIONS.md) are implemented for explicit delivery of
+supported safety events. Planning is read-only. Private provisioning and one
+supervised test succeeded, with iPhone receipt confirmed; unattended incident
+delivery and notification scheduling remain inactive.

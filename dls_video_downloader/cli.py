@@ -32,6 +32,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=str(Path(__file__).resolve().parent.parent / "state/inventory.sqlite3"))
     commands = parser.add_subparsers(dest="command", required=True)
+    notifications=commands.add_parser('notifications',help='Read-only safety alert plans and explicitly authorized Pushover delivery')
+    notify_commands=notifications.add_subparsers(dest='notification_command',required=True)
+    for name in ('plan','status','run','test','retry'):
+        command=notify_commands.add_parser(name)
+        command.add_argument('--json',action='store_true')
+        if name in ('run','test','retry'):command.add_argument('--execute',action='store_true')
+        if name in ('run','test'):
+            command.add_argument('--config',type=Path)
+            command.add_argument('--runtime-seconds',type=int,default=60)
+        if name=='run':command.add_argument('--max-messages',type=int,default=1)
+        if name=='test':command.add_argument('--test-id',required=True)
+        if name=='retry':
+            command.add_argument('notification_id')
+            command.add_argument('--acknowledge-duplicate-risk',action='store_true')
     youtube=commands.add_parser('youtube-safety',help='Read-only shared blocking status and explicitly authorized recovery')
     youtube_commands=youtube.add_subparsers(dest='safety_command',required=True)
     for name in ('status','events','import-legacy','review-events','recover'):
@@ -139,6 +153,26 @@ def main(argv=None):
         command.add_argument("--json", action="store_true")
         command.add_argument("--details", action="store_true")
     args = parser.parse_args(argv)
+    if args.command=='notifications':
+        from . import notifications as notifier, pushover
+        try:
+            state=Path(args.db).resolve().parent
+            if args.notification_command in ('plan','status'):result=notifier.plan(state,include_tests=args.notification_command=='status')
+            elif args.notification_command=='retry':
+                result=notifier.retry(state,args.notification_id,execute=args.execute,
+                    acknowledge_duplicate_risk=args.acknowledge_duplicate_risk)
+            else:
+                result=notifier.run(state,execute=args.execute,config=args.config or pushover.DEFAULT_CONFIG,
+                    max_messages=args.max_messages if args.notification_command=='run' else 1,
+                    runtime_seconds=args.runtime_seconds,operator_test=args.test_id if args.notification_command=='test' else None)
+            print(json.dumps(result,indent=2) if args.json else notifier.render(result));return result.get('exit_code',0)
+        except notifier.ActionError as exc:
+            print(str(exc),file=sys.stderr);return 1
+        except notifier.SenderBusy:
+            print('notification_sender_busy',file=sys.stderr);return 75
+        except KeyboardInterrupt:return 130
+        except Exception:
+            print('Notification operation failed; inspect configuration, event and delivery state locally.',file=sys.stderr);return 1
     if args.command=='youtube-safety':
         state=safety.Safety(Path(args.db).resolve().parent)
         try:

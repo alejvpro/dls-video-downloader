@@ -1,5 +1,52 @@
 # DLS video downloader handoff
 
+## Pushover notification Git checkpoint
+
+The nine notification source/test/documentation files are captured in the local
+checkpoint. Prior offline milestone sections retain their historical status.
+The one production operator test `first-validation-20261105` was accepted by
+Pushover at November 5 23:20:08 UTC; the user confirmed visible iPhone receipt.
+Private configuration is provisioned outside Git, and the temporary source is
+retained pending separately authorized cleanup. Neither credential file is
+accessed during this checkpoint. Production notification history and original
+YouTube blocking evidence remain intact. No additional notification, YouTube
+request, recovery, cron restoration, unattended activation or push is performed.
+All six DLS cron command lines remain paused. Next: separately authorize a bounded
+real-incident delivery/activation plan after reviewing journal intake and retries.
+
+## Pushover adapter milestone — offline only, uncommitted
+
+A DLS-specific notification adapter consumes existing alertable safety events,
+keeps independent SQLite delivery history and semantic/event-ID deduplication,
+and supports bounded explicit Pushover delivery. Read [NOTIFICATIONS.md](NOTIFICATIONS.md).
+No archival producer calls the sender automatically. All six DLS cron commands
+remain paused; caption activation and YouTube recovery remain separately gated.
+
+`notifications plan/status/run` are read-only by default, without credential
+access or runtime initialization. `run --execute` sends at most one message by
+default. `notifications test --test-id ID --execute` is a fixed operator test,
+not a fabricated archival incident; accepted IDs are never resent. Three DLS
+levels are supported with provider normal priority 0, never emergency repetition.
+
+Delivery attempts commit before network work. Confirmed API acceptance is not
+phone confirmation. Timeouts/crashes/lost responses become uncertain and require
+explicit duplicate-risk acknowledgment before requeue; temporary failures have
+bounded backoff and a five-failure limit. Provider rejection holds further sends
+until corrected and explicitly requeued. Nothing modifies safety incident history,
+YouTube cooldowns or archival selection. Current credentials and ~/pushover.txt
+are never accessed; production notification state is not initialized here.
+
+Verification: 63 new notification tests and all 587 offline tests pass with
+network sockets, production downloader/provider launches and reserved credential
+access guarded; zero unexpected accesses. All 93 protected production files,
+three database integrity checks and paused crontab bytes match. No production
+notification or shared-safety state directory was initialized.
+
+Next: separately authorize private credential provisioning and exactly one fixed
+connectivity message. Do not automatically send all pending alerts, restore cron,
+perform YouTube requests, or claim unattended operation. No Healthchecks, Indexer
+reporting, AlejMusic changes or notification scheduler is implemented.
+
 ## Caption and YouTube safety Git checkpoint
 
 Caption preservation and shared YouTube safety are captured together because
