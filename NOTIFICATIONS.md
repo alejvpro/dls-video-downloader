@@ -215,3 +215,86 @@ untouched during checkpoint verification. Before enabling unattended alerts,
 separately review incident intake, sender invocation/activation and bounded retry
 operations; do not restore video/supplemental cron or perform YouTube recovery as
 part of notification activation implicitly.
+
+## Unattended incident dispatcher — implemented, not scheduled
+
+`notifications dispatch` is a finite incident-only poll of the existing sender.
+It shares the ledger, templates, retry policy, nonblocking sender lock and child
+lock inheritance with `notifications run`. There is no additional database,
+queue, daemon, automatic safety probe, or callback into archival workflows.
+
+```sh
+# Default: no credentials, network, catalog initialization or operational writes
+/opt/homebrew/bin/python3 -B -m dls_video_downloader notifications dispatch --json
+# Capability only; requires separately authorized production activation
+/opt/homebrew/bin/python3 -B -m dls_video_downloader notifications dispatch --execute --max-messages 2 --runtime-seconds 60 --json
+```
+
+The report includes `operation: incident_dispatch`, attempt/acceptance/due/review
+counts, selected IDs, per-attempt outcomes and sanitized errors. Empty execution
+polls make no provider request and do not load credentials. Provider acceptance
+is not phone receipt. Exit codes: 0 for completed/empty poll, 2 for unsuccessful
+attempt, 75 for sender contention/provider hold, 1 for configuration/operational
+error, 130 for interrupted delivery. Uncertain records remain held for explicit
+duplicate-risk review, never silently resent by the next five-minute poll.
+Confidently failed temporary attempts follow the existing bounded retry policy.
+
+Proposed **not installed** Mac-local cron (the dispatcher has no time-of-day policy):
+
+```cron
+*/5 * * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/notifications && /opt/homebrew/bin/python3 -B -m dls_video_downloader notifications dispatch --execute --max-messages 2 --runtime-seconds 60 --json > /Users/alejandroveloz/Sites/dls-video-downloader/state/notifications/dispatch-last.json 2>&1
+```
+
+The command creates the notification directory before shell redirection is
+opened; if directory creation fails, sending does not start. `umask 077` keeps
+new directories and reports private (it does not repair existing permissions).
+Review existing ownership/permissions during supervised installation.
+This overwrites the last operational report instead of appending an unbounded
+log; durable evidence remains in `deliveries.sqlite3`. An overlapping invocation
+may replace this last report with a busy result; consult the ledger for delivery
+evidence. No secrets are in argv
+or report. Keep the directory private. The batch is sequential, with bounded
+provider timeouts and no inline retries; overlap defers through the existing
+sender lock. To pause notifications, comment only this future dispatcher line,
+independently of the six currently paused YouTube jobs. No GUI/login session
+is required by this HTTPS sender; normal cron host availability still applies.
+
+Inspect `notifications plan --json` for pending/due items and `notifications
+status --json` for accepted, retryable, rejected, review and uncertain records,
+provider hold and recent attempts. Fix configuration/provider rejection before
+explicit retry; review uncertainty before acknowledging duplicate risk. Do not
+repeat the already accepted connectivity-test ID as a validation strategy.
+
+### Legacy evidence and rollout
+
+An absent shared journal is an empty source, not proof of healthy YouTube access.
+The dispatcher does not inspect/import component-local cooldowns, initialize
+shared safety state, emit review events, or manufacture a notification for the
+November 5 legacy caption failure. That original evidence remains authoritative.
+A future authorized `youtube-safety import-legacy --execute` can create an
+alertable import event: **the next executed dispatcher may deliver it**. Decide
+intentionally whether that historical alert should be sent before authorizing
+import and scheduling. Do not clear history to suppress an alert. The first real
+shared event will be picked up on the next authorized poll even while YouTube
+remains blocked. Cooldown expiry alone produces no recovery notification.
+
+Next supervised milestone: inspect the read-only dispatcher plan, agree on
+legacy-import/initial-alert handling, authorize one bounded real-incident send
+if an eligible event exists, verify its ledger/API outcome and phone receipt,
+then separately install the proposed schedule. Do not fabricate a production
+incident or resume acquisition/recovery implicitly. Check subsequent empty polls
+and failure reports before declaring unattended delivery validated.
+
+Future Archiver/Indexer producers could reuse the sender only through explicitly
+reviewed stable event mappings; their asset databases remain independent. No
+Healthchecks or weekly summary producer is implemented here.
+
+Dispatcher diagnostics cap each item/due/review list at 50 and expose omitted
+counts; summary counts cover the full selection. This affects reporting only,
+not ingestion, deduplication or the ledger. Full inspection remains available
+through the existing plan/status commands.
+
+Offline milestone verification: 607 regression tests (20 new dispatcher tests),
+with external networking, real provider/downloader launches and production
+credential-file reads guarded. All 95 protected files remained unchanged; four
+operational catalogs passed integrity checks and cron remained byte-identical.

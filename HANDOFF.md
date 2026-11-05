@@ -1,5 +1,18 @@
 # DLS video downloader handoff
 
+## Incident dispatcher checkpoint — not activated
+
+`notifications dispatch` now exposes the existing finite incident sender for
+unattended polling, with dry-run default, explicit execution, independent sender
+lock, durable deduplication and bounded retries. No new operational store or
+safety-state migration is introduced. See [NOTIFICATIONS.md](NOTIFICATIONS.md)
+for the proposed five-minute command, legacy-import rollout decision, status
+inspection and recovery procedure. No cron installation, production send,
+credential access or YouTube recovery is authorized by this implementation.
+All six DLS YouTube jobs remain paused. The checkpoint contains only the five
+dispatcher source/test/documentation files. The proposed cron command creates
+its private report directory before redirection; no schedule is installed.
+
 ## Pushover notification Git checkpoint
 
 The nine notification source/test/documentation files are captured in the local

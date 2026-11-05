@@ -256,6 +256,31 @@ def run(state,*,execute=False,config=pushover.DEFAULT_CONFIG,max_messages=1,runt
     return result
 
 
+def dispatch(state,*,execute=False,**kwargs):
+    """Finite unattended poll; reuse the sender's durable ledger and OS lock.
+
+    No journal creation, legacy import, safety review or YouTube operation.
+    Empty polls never load credentials or initialize the notification catalog.
+    Only explicit execution permits provider work. Test messages are excluded.
+    """
+    if kwargs.pop('operator_test',None) is not None:raise ValueError('Dispatcher cannot send operator tests')
+    result=run(state,execute=execute,**kwargs)
+    result['operation']='incident_dispatch'
+    result['legacy_policy']='explicit_import_required'
+    result['summary']={
+        'attempted':sum('attempt_id' in w for w in result['work']),
+        'accepted':sum(w.get('status')=='accepted' for w in result['work']),
+        'review_required':len(result['review_ids']),
+        'pending_due':len(result['due_ids']),
+    }
+    # Bound scheduled diagnostics without truncating ledger or source evidence.
+    result['report_omitted']={}
+    for field in ('items','due_ids','review_ids','deferred_due_ids'):
+        result['report_omitted'][field]=max(0,len(result[field])-50)
+        result[field]=result[field][:50]
+    return result
+
+
 def retry(state,notification_id,*,execute=False,acknowledge_duplicate_risk=False,now=None):
     if not re.fullmatch('[a-f0-9]{64}',notification_id):raise ActionError('Invalid notification ID')
     rows=read_rows(root_for(state));row=next((r for r in rows if r['notification_id']==notification_id),None)

@@ -34,14 +34,14 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     notifications=commands.add_parser('notifications',help='Read-only safety alert plans and explicitly authorized Pushover delivery')
     notify_commands=notifications.add_subparsers(dest='notification_command',required=True)
-    for name in ('plan','status','run','test','retry'):
+    for name in ('plan','status','run','dispatch','test','retry'):
         command=notify_commands.add_parser(name)
         command.add_argument('--json',action='store_true')
-        if name in ('run','test','retry'):command.add_argument('--execute',action='store_true')
-        if name in ('run','test'):
+        if name in ('run','dispatch','test','retry'):command.add_argument('--execute',action='store_true')
+        if name in ('run','dispatch','test'):
             command.add_argument('--config',type=Path)
             command.add_argument('--runtime-seconds',type=int,default=60)
-        if name=='run':command.add_argument('--max-messages',type=int,default=1)
+        if name in ('run','dispatch'):command.add_argument('--max-messages',type=int,default=1)
         if name=='test':command.add_argument('--test-id',required=True)
         if name=='retry':
             command.add_argument('notification_id')
@@ -162,8 +162,8 @@ def main(argv=None):
                 result=notifier.retry(state,args.notification_id,execute=args.execute,
                     acknowledge_duplicate_risk=args.acknowledge_duplicate_risk)
             else:
-                result=notifier.run(state,execute=args.execute,config=args.config or pushover.DEFAULT_CONFIG,
-                    max_messages=args.max_messages if args.notification_command=='run' else 1,
+                result=(notifier.dispatch if args.notification_command=='dispatch' else notifier.run)(state,execute=args.execute,config=args.config or pushover.DEFAULT_CONFIG,
+                    max_messages=args.max_messages if args.notification_command in ('run','dispatch') else 1,
                     runtime_seconds=args.runtime_seconds,operator_test=args.test_id if args.notification_command=='test' else None)
             print(json.dumps(result,indent=2) if args.json else notifier.render(result));return result.get('exit_code',0)
         except notifier.ActionError as exc:
