@@ -152,7 +152,23 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
                 failure(source, exc)
         result['new_ids'] = sorted(set(positions) - before)
         scope = forward.candidates(db, positions, listed_status, now=clock(), start=start)
+        work=forward.enrichment_work(db,positions,now=clock(),start=start,
+                                     retained_pending=retry['deferred_initial'])
+        for video in work['initial_pending']:
+            retry['deferred_initial'].setdefault(video,clock().isoformat())
+        scope['enrichment_work']=work
+        prior_candidates=list(scope['pending'])
+        active=[]
+        for video in prior_candidates:
+            row=db.execute('SELECT metadata,field_provenance FROM videos WHERE id=?',(video,)).fetchone()
+            if not row:continue
+            metadata=json.loads(row['metadata']);provenance=json.loads(row['field_provenance'])
+            if (provenance.get('live_status',{}).get('rank')==2 and
+                    metadata.get('live_status') in ('is_upcoming','is_live','post_live')):
+                active.append(video)
+        scope['pending']=list(dict.fromkeys(active+prior_candidates+work['initial_pending']+work['followup_required']))
         result['forward_scope'] = scope
+        result['enrichment_work']=work
         for video in scope['pending']:
             backoff = retry['failures'].get(video)
             if backoff and forward.instant(backoff['next_retry']) > clock():
@@ -193,6 +209,16 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
                 retry['failures'].pop(video,None)
             except (ValueError, OSError) as exc:
                 failure('enrichment', exc, video)
+        work=forward.enrichment_work(db,positions,now=clock(),start=start,
+                                     retained_pending=retry['deferred_initial'])
+        for video in list(retry['deferred_initial']):
+            if video not in work['initial_pending']:
+                retry['deferred_initial'].pop(video,None)
+        result['enrichment_work']=work
+        result['enrichment_work']['completed_this_run']=[v for v in result.get('enriched',[]) if v not in work['initial_pending']]
+        result['enrichment_work']['deferred_this_run']=[v for v in work['initial_pending']
+            if v not in result.get('attempted',[]) and v not in retry['failures']]
+        result['enrichment_work']['retry_deferred_this_run']=[v for v in retry['failures'] if v in work['initial_pending']]
         current = {i['id']: i for i in report(db, start)['items']}
         for video in sorted(set(positions)|set(scope['scope'])):
             metadata = json.loads(db.execute('SELECT metadata FROM videos WHERE id=?', (video,)).fetchone()[0])
@@ -217,6 +243,9 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
             'complete': requested <= set(result['encountered']) and not result['failures']
                         and not unattempted and not result['stop_reason'],
             'candidate_count': len(pending), 'attempted_count': len(result['attempted']),
+            'initial_pending_count':len(result.get('enrichment_work',{}).get('initial_pending',[])),
+            'followup_required_count':len(result.get('enrichment_work',{}).get('followup_required',[])),
+            'resolved_count':len(result.get('enrichment_work',{}).get('resolved',[])),
             'unattempted_ids': unattempted,
             'failed_ids': [f['id'] for f in result['failures'] if f['id'] is not None],
             'scope': 'bounded_heads_and_recent_source_evidence'}

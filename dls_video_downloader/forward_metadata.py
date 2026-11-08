@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from .classification import CHANNEL
+from .classification import CHANNEL, publication
 from .comment_planning import age_anchor, instant
 from .inventory import report
 
@@ -20,12 +20,19 @@ def read_state(directory):
         with (Path(directory)/'retry.json').open('rb') as stream:
             raw=stream.read(STATE_LIMIT+1)
     except FileNotFoundError:
-        return {'version':1,'failures':{},'cooldown_until':None}
+        return {'version':1,'failures':{},'cooldown_until':None,'deferred_initial':{}}
     if len(raw)>STATE_LIMIT:
         raise ValueError('Oversized metadata retry state; manual review required')
     state=json.loads(raw)
     if state.get('version')!=1 or not isinstance(state.get('failures'),dict):
         raise ValueError('Unsupported metadata retry state')
+    state.setdefault('deferred_initial',{})
+    if not isinstance(state['deferred_initial'],dict):
+        raise ValueError('Invalid deferred initial-enrichment state')
+    for video_id, value in state['deferred_initial'].items():
+        if not isinstance(video_id,str) or not isinstance(value,str):
+            raise ValueError('Invalid deferred initial-enrichment entry')
+        instant(value)
     if state.get('cooldown_until'):instant(state['cooldown_until'])
     for value in state['failures'].values():
         if type(value['count']) is not int or value['count']<1:raise ValueError('Invalid metadata failure count')
@@ -65,6 +72,75 @@ def failed(state, video, now, error):
         'error':str(error)[:1000]}
 
 
+
+def enrichment_work(db, listed, *, now, start, retained_pending=()):
+    """Return durable forward enrichment work derived from retained observations.
+
+    A recent flat observation with no full observation remains pending even when
+    absent from this run's bounded listing. Full, resolved Skip/Review records
+    are complete; active/incomplete full records are follow-ups.
+    """
+    from datetime import date
+    recent_floor=now-RECENT
+    start_date=date.fromisoformat(start)
+    rows=db.execute("SELECT id,metadata,field_provenance FROM videos ORDER BY id").fetchall()
+    items={i['id']:i for i in report(db,start)['items']}
+    initial=[];follow=[];resolved=[];completed=[];unknown=[]
+    for row in rows:
+        vid=row['id']; meta=json.loads(row['metadata']); prov=json.loads(row['field_provenance'])
+        if meta.get('channel_id')!=CHANNEL: continue
+        obs=db.execute("SELECT detail,observed_at FROM observations WHERE video_id=? ORDER BY observation_id",(vid,)).fetchall()
+        fulls=[x for x in obs if x['detail']=='full']
+        sources={x['source']:x['last_seen'] for x in db.execute('SELECT source,last_seen FROM sources WHERE video_id=?',(vid,))}
+        sightings=[x for k,x in sources.items() if k in ('live','videos','morning:live','morning:videos')]
+        recent_presentation=any(_recent(sources[k],recent_floor,now)
+                                for k in ('morning:live','morning:videos') if k in sources)
+        active_status=meta.get('live_status') in ('is_upcoming','is_live','post_live')
+        status_at=prov.get('live_status',{}).get('at')
+        recent_active=active_status and status_at and _recent(status_at,recent_floor,now)
+        recent=vid in listed or vid in retained_pending or recent_presentation or recent_active
+        published,_=publication(meta)
+        in_date=published is None or date.fromisoformat(published)>=start_date
+        if not recent or not in_date: continue
+        item=items.get(vid,{})
+        if item.get('decision') in ('skip','reject'):
+            continue
+        if not fulls:
+            initial.append((vid, 'streams' if any(k in sources for k in ('live','morning:live')) else 'videos', min(sightings) if sightings else row['id']))
+            if published is None:unknown.append(vid)
+            continue
+        completed.append(vid)
+        status=meta.get('live_status');full_status=prov.get('live_status',{}).get('rank')==2
+        complete=full_status and status in ('was_live','not_live') and not meta.get('is_live')
+        if complete and item.get('classification') in ('skip','review','not_selected'):
+            resolved.append(vid)
+        elif not complete:
+            follow.append((vid,'streams' if any(k in sources for k in ('live','morning:live')) else 'videos',min(sightings) if sightings else vid))
+        else:resolved.append(vid)
+    # Round robin by originating tab, oldest retained sightings first within tab.
+    initial=_fair(initial);follow=_fair(follow)
+    return {'initial_pending':[x[0] for x in initial], 'followup_required':[x[0] for x in follow],
+            'initial_completed':completed,
+            'resolved':resolved,'unknown_date':[x for x in unknown if x in {a[0] for a in initial}],
+            'listed_initial_pending':[x for x in listed if any(x==a[0] for a in initial)],
+            'initial_queue':[list(x) for x in initial],'followup_queue':[list(x) for x in follow],'pending_count':len(initial),'resolved_count':len(resolved)}
+
+
+def _recent(value,floor,now):
+    try:
+        at=instant(value);return floor<=at<=now
+    except (ValueError,TypeError):return False
+
+
+def _fair(entries):
+    groups={'streams':[],'videos':[]}
+    for row in sorted(entries,key=lambda x:(x[2],x[0])):groups[row[1]].append(row)
+    out=[]
+    while groups['streams'] or groups['videos']:
+        for tab in ('streams','videos'):
+            if groups[tab]:out.append(groups[tab].pop(0))
+    return out
+
 def candidates(db, head, listed_status, *, now, start):
     """Every relevant forward ID needing metadata; no content-priority slots.
 
@@ -83,7 +159,7 @@ def candidates(db, head, listed_status, *, now, start):
             anchor=datetime(anchor.year,anchor.month,anchor.day,tzinfo=timezone.utc)
         status=metadata.get('live_status');status_proof=provenance.get('live_status',{})
         full=status_proof.get('rank')==2 and metadata.get('channel_id')==CHANNEL
-        complete=(full and status in ('was_live','not_live') and anchor is not None
+        complete=(full and status in ('was_live','not_live')
                   and not (metadata.get('is_live') is True and
                            provenance.get('is_live',{}).get('at')==status_proof.get('at')))
         presentation=[instant(sources[k]['last_seen']) for k in ('morning:live','morning:videos') if k in sources]

@@ -45,7 +45,16 @@ class DiscoveryTests(unittest.TestCase):
             limit = int(args[args.index("--playlist-end") + 1])
             entries = self.live if args[-1].endswith("/streams") else self.videos
             return json.dumps({"channel_id": CHANNEL, "epoch": 100, "entries": entries[:limit]})
-        return json.dumps(self.full[args[-1].split("=")[-1]])
+        video_id = args[-1].split("=")[-1]
+        # The forward workflow enriches every new listed ID, including items
+        # that authoritative metadata later classifies Skip or Review.
+        document = self.full.get(video_id)
+        if document is None:
+            source = next((item for item in (*self.live, *self.videos) if item['id'] == video_id), {})
+            document = {"id": video_id, "title": source.get("title", "Mystery Crate"),
+                        "channel_id": CHANNEL, "live_status": "not_live",
+                        "upload_date": "20261028", "duration": source.get("duration", 3000)}
+        return json.dumps(document)
 
     def run_workflow(self, **kwargs):
         with patch.object(media, "run", side_effect=self.fake):
@@ -61,6 +70,7 @@ class DiscoveryTests(unittest.TestCase):
             acquire.assert_not_called()
         self.assertEqual(first['new_ids'], sorted([CLUB, SKIP]))
         self.assertEqual(second['new_ids'], [])
+        self.assertEqual(second['enriched'], [])
         self.assertEqual(before, report(self.db, "2026-10-26"))
         self.assertEqual(first['encountered'], {'live': 1, 'videos': 2})
         self.assertEqual(first['classifications'], {'daily_show': 1, 'the_club': 1, 'skip': 1})
@@ -187,6 +197,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(row['failures'], 2)
         self.assertEqual(datetime.fromisoformat(row['next_retry']), at + timedelta(minutes=181))
 
+    def test_budget_deferred_initial_enrichment_survives_listing_head_movement(self):
+        first=self.run_workflow(max_enrich=1)
+        pending=set(first['enrichment_work']['deferred_this_run'])
+        self.assertTrue({CLUB,SKIP} <= pending)
+        self.assertEqual(set(json.loads((self.state/'retry.json').read_text())['deferred_initial']),pending)
+        self.live=[];self.videos=[]
+        second=self.run_workflow(max_enrich=8)
+        self.assertTrue({CLUB,SKIP} <= set(second['enriched']))
+        state=json.loads((self.state/'retry.json').read_text())
+        self.assertFalse(pending & set(state['deferred_initial']))
+
     def test_pre_window_and_unknown_approvals_require_manual_command(self):
         self.full[DAILY]['release_date'] = '20261025'
         del self.full[CLUB]['upload_date']
@@ -211,7 +232,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn(CLUB, result['enriched'])
         self.assertEqual(acquire.call_args.args[1], CLUB)
         full_calls = [c for c in self.calls if '--flat-playlist' not in c]
-        self.assertEqual(len(full_calls), 2)  # Daily + Club, not 70 excerpts.
+        self.assertEqual(len(full_calls), 8)  # Existing per-run budget applies to all new forward IDs.
+        self.assertEqual(result['enrichment_status']['budget'], 8)
+        self.assertGreater(result['enrichment_status']['initial_pending'], 0)
 
     def test_daily_backlog_cannot_starve_new_club_enrichment(self):
         base = dict(self.live[0])

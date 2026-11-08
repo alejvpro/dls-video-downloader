@@ -1,5 +1,6 @@
 """Bounded channel discovery and explicit bounded acquisition orchestration."""
 from collections import Counter
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -7,6 +8,7 @@ import uuid
 
 from . import youtube_safety as safety
 from . import acquisition as media
+from . import forward_metadata as forward
 from .classification import CHANNEL, DEFAULT_START
 from .inventory import FIELDS, encoded, import_document, now, report
 from .operations import (LOG_LIMIT, cleanup_staging, forward_allowed, retry_pending,
@@ -158,7 +160,46 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         result["new_ids"] = sorted(set(positions) - before)
         verified = {r[0] for r in db.execute("SELECT video_id FROM acquisitions")}
         enrich, deferred = enrichment_candidates(db, positions, items, verified, start)
+        metadata_retry=forward.read_state(state)
+        prior_metadata_retry=json.dumps(metadata_retry,sort_keys=True)
+        work=forward.enrichment_work(db,positions,now=datetime.now(timezone.utc),start=start,
+                                     retained_pending=metadata_retry['deferred_initial'])
+        for video_id in work['initial_pending']:
+            metadata_retry['deferred_initial'].setdefault(video_id,datetime.now(timezone.utc).isoformat())
+        initial_queue=[];followup_queue=[]
+        for video_id in work['initial_pending']:
+            if video_id not in items or video_id in verified or items[video_id]['decision'] in ('reject','skip'):
+                continue
+            pending_retry=retry_pending(db,video_id,'enrichment')
+            if pending_retry:
+                result['retry_deferred'].append(pending_retry)
+                continue
+            initial_queue.append((positions.get(video_id, streams_limit+videos_limit),video_id))
+        resolved_ids=set(work['resolved'])
+        enrich=[entry for entry in enrich if entry[1] not in resolved_ids]
+        for video_id in work['followup_required']:
+            if video_id not in items or video_id in verified or items[video_id]['decision'] in ('reject','skip'):
+                continue
+            pending_retry=retry_pending(db,video_id,'enrichment')
+            if pending_retry:
+                result['retry_deferred'].append(pending_retry)
+                continue
+            followup_queue.append((positions.get(video_id, streams_limit+videos_limit),video_id))
+        # A known unresolved daily show keeps its established early status-check
+        # priority. Remaining new/deferred first enrichments are interleaved by
+        # tab, followed by other specific follow-up checks.
+        active_followups=set()
+        for _,video_id in followup_queue:
+            row=db.execute('SELECT metadata FROM videos WHERE id=?',(video_id,)).fetchone()
+            if row and json.loads(row['metadata']).get('live_status') in ('is_upcoming','is_live','post_live'):
+                active_followups.add(video_id)
+        urgent_active=[entry for entry in followup_queue if entry[1] in active_followups]
+        other_followups=[entry for entry in followup_queue if entry not in urgent_active]
+        enrich=list(dict.fromkeys(urgent_active+enrich+initial_queue+other_followups)); result['enrichment_work']=work
+        result['enrichment_status']={'initial_pending':len(work['initial_pending']),'followup_required':len(work['followup_required']),'resolved':len(work['resolved']),'budget':max_enrich}
         result['retry_deferred'].extend(deferred)
+        if json.dumps(metadata_retry,sort_keys=True)!=prior_metadata_retry:
+            forward.save_state(state,metadata_retry)
         enriched_metadata = {}
         failed_enrichment = set()
         for _, video_id in enrich[:max_enrich]:
@@ -182,6 +223,20 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                 failed_enrichment.add(video_id)
                 retry_failure(db, video_id, 'enrichment', exc, base_minutes=retry_base_minutes, max_hours=retry_max_hours)
                 failure("enrichment", exc, video_id)
+        work=forward.enrichment_work(db,positions,now=datetime.now(timezone.utc),start=start,
+                                     retained_pending=metadata_retry['deferred_initial'])
+        for video_id in list(metadata_retry['deferred_initial']):
+            if video_id not in work['initial_pending']:
+                metadata_retry['deferred_initial'].pop(video_id,None)
+        if json.dumps(metadata_retry,sort_keys=True)!=prior_metadata_retry:
+            forward.save_state(state,metadata_retry)
+        work['completed_this_run']=[v for v in result.get('enriched',[]) if v not in work['initial_pending']]
+        attempted_ids=set(result.get('enriched',[]))|failed_enrichment
+        work['deferred_this_run']=[v for v in work['initial_pending']
+            if v not in attempted_ids and not retry_pending(db,v,'enrichment')]
+        result['enrichment_work']=work
+        attempted_enrichment=len(result.get('enriched',[]))+len(failed_enrichment)
+        result['enrichment_status']={'initial_pending':len(work['initial_pending']),'initial_completed':len(work['initial_completed']),'followup_required':len(work['followup_required']),'resolved':len(work['resolved']),'budget_deferred':len(work['deferred_this_run']),'budget':max_enrich,'attempted':attempted_enrichment,'budget_exhausted':attempted_enrichment>=max_enrich and bool(work['initial_pending'] or work['followup_required'])}
         items = report(db, start)["items"]
         for item in items:
             if item["id"] in positions or item["eligibility"] == "eligible":

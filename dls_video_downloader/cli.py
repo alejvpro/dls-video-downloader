@@ -1,6 +1,6 @@
 """Inventory CLI with explicit single-video acquisition. Status/plan are read-only."""
 import argparse
-from datetime import date
+from datetime import date, datetime, timezone
 import json
 import sqlite3
 import sys
@@ -199,7 +199,6 @@ def main(argv=None):
     if args.command == 'captions':
         from . import caption_planning, caption_collection, caption_runner
         from .comment_collection import safe_diagnostic
-        from datetime import datetime, timezone
         try:
             if args.caption_command=='plan':
                 result=caption_planning.plan(args.db,args.store_root,now=datetime.now(timezone.utc),start=args.start_date,
@@ -286,7 +285,6 @@ def main(argv=None):
             print(f"Comment runner failed: {safe_diagnostic(exc)}", file=sys.stderr)
             return 1
     if args.command == "comments" and args.comment_command == "plan":
-        from datetime import datetime, timezone
         from .comment_planning import plan, render
         try:
             result = plan(args.db, args.store_root, now=args.now or datetime.now(timezone.utc),
@@ -331,6 +329,21 @@ def main(argv=None):
             if readonly:
                 result = report(db, args.start_date, args.end_date)
                 result['runtime'] = runtime_report(db, result['items'], args.start_date)
+                from . import forward_metadata
+                metadata_state=forward_metadata.read_state(Path(args.db).resolve().parent)
+                enrichment=forward_metadata.enrichment_work(db,[],now=datetime.now(timezone.utc),start=args.start_date,
+                    retained_pending=metadata_state['deferred_initial'])
+                result['forward_enrichment']={k:enrichment[k] for k in ('pending_count','initial_pending','initial_completed','followup_required','resolved','unknown_date','listed_initial_pending')}
+                result['forward_enrichment']['deferred_retry']=[r for r in result['runtime']['retry_delays'] if r.get('operation')=='enrichment']
+                result['forward_enrichment']['budget_deferred_ids']=sorted(metadata_state['deferred_initial'])
+                latest=result['runtime']['recent_runs'][0] if result['runtime']['recent_runs'] else None
+                last_summary=latest['summary'] if latest else {}
+                result['forward_enrichment']['new_ids_last_run']=last_summary.get('new_ids',[])
+                last_work=last_summary.get('enrichment_work',{})
+                result['forward_enrichment']['budget_deferred_last_run']=last_work.get('deferred_this_run',[])
+                result['forward_enrichment']['date_scope']=args.start_date
+                result['forward_enrichment']['last_listing_coverage']=last_summary.get('coverage',{})
+                result['forward_enrichment']['plan_performed_discovery']=False
                 if args.json:
                     print(json.dumps(result, ensure_ascii=False, indent=2))
                 else:

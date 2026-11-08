@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from dls_video_downloader import acquisition as media
 from dls_video_downloader import morning_discovery as morning
+from dls_video_downloader import forward_metadata
 from dls_video_downloader.classification import CHANNEL
 from dls_video_downloader.cli import main
 from dls_video_downloader.comment_planning import plan
@@ -71,6 +72,42 @@ class MorningTests(unittest.TestCase):
         self.assertEqual(self.db.execute('select count(*) from acquisitions').fetchone()[0],0)
         self.assertFalse((self.state/'comments').exists())
 
+    def test_new_club_enrichment_survives_budget_and_resumes_next_run(self):
+        out=self.invoke(max_metadata_requests=1,videos_limit=1)
+        self.assertEqual(out['enriched'],[VIDEO])
+        self.assertIn(CLUB,out['enrichment_work']['initial_pending'])
+        self.now+=timedelta(minutes=10)
+        out=self.invoke(max_metadata_requests=2,videos_limit=1)
+        self.assertIn(CLUB,out['enriched'])
+        self.assertEqual(out['enrichment_work']['initial_pending'],[])
+
+    def test_budget_deferred_unknown_date_survives_recent_evidence_window(self):
+        first=self.invoke(max_metadata_requests=1,videos_limit=1)
+        self.assertIn(CLUB,first['enrichment_work']['initial_pending'])
+        self.videos=[]
+        self.now+=timedelta(days=16)
+        second=self.invoke(max_metadata_requests=1,videos_limit=1)
+        self.assertIn(CLUB,second['enriched'])
+        self.assertNotIn(CLUB,second['enrichment_work']['initial_pending'])
+
+    def test_repeated_flat_sightings_do_not_repeat_resolved_enrichment(self):
+        self.invoke()
+        before=self.db.execute("select count(*) from observations where video_id=? and detail='full'",(VIDEO,)).fetchone()[0]
+        out=self.invoke()
+        self.assertNotIn(VIDEO,out['enriched'])
+        after=self.db.execute("select count(*) from observations where video_id=? and detail='full'",(VIDEO,)).fetchone()[0]
+        self.assertEqual(before,after)
+
+    def test_initial_enrichment_queue_fairly_interleaves_both_tabs(self):
+        streams=[f'strm{i:07d}' for i in range(3)]
+        videos=[f'vids{i:07d}' for i in range(3)]
+        with self.db:
+            import_document(self.db,{'channel_id':CHANNEL,'entries':[{'id':v,'_type':'url'} for v in streams]},'live','fair-streams')
+            import_document(self.db,{'channel_id':CHANNEL,'entries':[{'id':v,'_type':'url'} for v in videos]},'videos','fair-videos')
+        listed=streams+videos
+        work=forward_metadata.enrichment_work(self.db,listed,now=self.now,start='2026-10-26')
+        self.assertEqual(work['initial_pending'],[streams[0],videos[0],streams[1],videos[1],streams[2],videos[2]])
+
     def test_flat_completed_alone_cannot_establish_completion(self):
         original=self.fake
         def fail_full(args,*rest):
@@ -89,6 +126,8 @@ class MorningTests(unittest.TestCase):
             self.now+=timedelta(seconds=1)
             out=self.invoke()
             self.assertEqual(out['status'][VIDEO]['live_status'],status)
+            self.assertIn(VIDEO,out['enrichment_work']['initial_completed'])
+            self.assertIn(VIDEO,out['enrichment_work']['followup_required'])
             self.assertFalse(self.planned()['due'])
 
     def test_previously_known_live_transitions_with_full_evidence(self):

@@ -1,5 +1,22 @@
 # DLS video downloader handoff
 
+## Forward enrichment correction (offline implementation)
+
+Forward enrichment now derives initial work from retained flat/full inventory
+observations and bounded Streams/Videos listings. New IDs without full metadata
+are eligible for initial enrichment regardless of eventual automatic
+classification; persistent manual Skip/Reject decisions remain excluded. A
+resolved full observation is not repeated just because its flat listing recurs.
+The regular runner and morning metadata pass share this selector, retain their
+existing per-run request limits, and report pending, completed, follow-up,
+unknown-date, retry-deferred, and budget-exhaustion state separately from tab
+listing coverage. Budget-deferred IDs are retained in the existing atomic
+`state/retry.json` metadata state, so they survive listing-head movement and
+restarts without a queue database. Completion or a verified pre-window date
+removes the marker; failed requests retain bounded per-video retry behavior.
+No production database, cron, or acquisition policy is changed by this
+implementation.
+
 ## Incident dispatcher checkpoint — not activated
 
 `notifications dispatch` now exposes the existing finite incident sender for
