@@ -1,6 +1,6 @@
 # DLS Video Downloader
 
-This project inventories and acquires selected official Dan Le Batard Show YouTube videos. YouTube video IDs identify videos permanently; titles and dates do not. The inventory and selection planner work offline. Explicit acquisition and bounded recent channel discovery are implemented; cron scheduling is active. Independent [manual single-video comment collection and preservation](COMMENTS.md) is implemented; automatic comment refresh, historical backfill, and Archiver integration remain future work. See [bounded runner usage and operational limits](RUNNER.md).
+This project preserves selected official Dan Le Batard Show YouTube videos and independent comment and caption assets. YouTube video IDs are stable identities; titles and dates are evidence, not identifiers. Forward discovery/enrichment, bounded acquisition, comments, original-English captions, shared YouTube safety, and Pushover notification delivery are implemented. **The six YouTube acquisition/supplemental cron entries are currently paused** pending a schedule/request-budget audit and supervised restoration; the separate 15-minute notification dispatcher remains active. Historical backfill and Archiver/Indexer integrations are not implemented. See [runner usage and operational limits](RUNNER.md).
 
 One manually invoked metadata-only validation enriched the October 26–28 daily shows. See [validation findings](METADATA-VALIDATION.md) for formats, runtime warnings, and verification. The acquisition and bounded discovery workflows are documented below.
 
@@ -107,17 +107,70 @@ Automatic content classification and acquisition eligibility are independent:
 - Manual rejection/skip: `blocked`.
 - Explicit approval: `eligible`, including older and date-unknown videos.
 
-`eligible` is a planning authorization, not a claim of completed/available/playable media. Acquisition independently verifies readiness. Dates are parameters of each read-only plan, never permanent historical exclusions. The scheduled runner adds a strict verified forward-date requirement even for approvals; explicit manual downloads retain historical approval exceptions.
+`eligible` is a planning authorization, not a claim of completed/available/playable media. Acquisition independently verifies readiness. Dates are parameters of each read-only plan, never permanent historical exclusions. The forward acquisition runner adds a strict verified forward-date requirement even for approvals; explicit manual downloads retain historical approval exceptions. YouTube cron jobs are currently paused as noted above.
 
-## Later phases
+## Roadmap and project handoffs
 
-First establish reliable forward discovery/downloads from October 26, then backfill backward in bounded sections: the preceding days of October and September 2026, earlier months, eventually approximately June 2021. Inclusive planning ranges and permanent IDs support this without duplicating inventory or decisions. Backfill-session progress and verified download records will be added with backfill/acquisition; they are not implemented now. Historical separate hours, segments, and compiled shows require evidence-based rules later.
+The priority is a reliable, continuously growing, searchable archive. Website launch
+does not wait for complete historical coverage.
 
-Future media preferences: maximum 720p, AV1 preferred when available, another codec as fallback, original video/audio streams retained without transcoding, audio required. Record actual codecs, resolution, container, selected formats, and size. The current verified profile uses MKV; broader format/container choices remain future work. Advertised size/availability is not proof of downloadability. Separate future transcoding remains possible.
+1. **Stabilize forward capture.** Validate the forward schedule and request/runtime
+   budgets, resolve the open Club audio-format policy with evidence, then restore
+   YouTube jobs through supervised stages. The target is daily full shows and Friday
+   Club episodes, with original captions and comments including IrishWeegee timestamp
+   evidence. Keep shared YouTube safety, incident preservation, and Pushover alerts
+   active. Audit the first scheduled results before treating unattended capture as
+   reliable.
+2. **Start slow historical collection after forward capture is stable.** Historical
+   Format Research must establish publishing patterns and the precise boundary before
+   the tentative June 1, 2026 scope is finalized. Work at a deliberately conservative
+   rate; make progress resumable, interruptible, and subject to shared YouTube safety.
+   Prefer existing inventory evidence or an approved official metadata source for
+   dates where that avoids duplicate yt-dlp metadata extraction. Do not let history
+   consume forward-capture priority or turn backfill into a second safety system.
+3. **Prioritize the main DLS Archiver.** Coordinate storage, portable asset records,
+   integrity verification, backup handling, and ingestion contracts across video,
+   comments, captions, and the existing podcast assets. Keep operational SQLite
+   catalogs distinct from durable archive receipts; do not introduce a universal
+   cross-project database as a shortcut.
+4. **Build the Indexer and searchable website.** Ingest whatever verified coverage
+   exists, including video metadata, captions, comments, podcast metadata, and their
+   relationships. Launch with current coverage and add backfilled material
+   incrementally; do not wait for the historical project to finish.
+5. **Continue historical backfill.** Expand slowly behind the forward workload,
+   from the researched recent era toward older and more complicated publishing
+   formats. Preserve uncertainty and provenance; let research guide each boundary.
 
-Later acquisition must use a configurable explicit yt-dlp executable path, initially `/usr/local/bin/yt-dlp-new` (user-verified 2026.10.26). Leave `/opt/homebrew/bin/yt-dlp` untouched. Node 22 challenge solving and FFmpeg/ffprobe have been validated; unattended invocations use explicit executable paths. No dependencies are installed or upgraded here.
+### Archiver and Indexer handoff dependencies
 
-`podcast-scraper` acquires podcast audio independently. `dls-archiver` preserves/verifies immutable completed artifacts; its proposed downloader handoff is not implemented here. The future Indexer interprets episodes, segments, relationships, and timestamp comments. This project will acquire video and source observations; it does not implement indexing, archive preservation, or a website.
+- **Downloader → Archiver:** stable YouTube ID; asset type; original source evidence
+  and field provenance; portable relative paths; byte size and SHA-256; retrieval or
+  observation times; format/track identity; immutable revision identity; and explicit
+  distinction between collection completion and source-data completeness. The
+  Archiver owns destination layout, copy/verification, backup policy, and durable
+  archive receipts. Downloader operational databases are not the handoff contract.
+- **Podcast scraper → Archiver:** the podcast item's stable source identity, original
+  media and metadata paths, checksums, and revision/update semantics. Coordinate this
+  contract with the existing podcast assets rather than coupling the downloader to
+  the sibling repository's internals.
+- **Archiver/source assets → Indexer:** stable asset identities, verified locations,
+  checksums/revisions, and provenance sufficient to distinguish missing assets from
+  unindexed assets. The Indexer owns normalization, transcript/comment interpretation,
+  episode/segment relationships, search fields, and query behavior; source-preserved
+  caption/comment bytes remain unchanged.
+- **Coverage and launch:** Indexer ingestion must be incremental and tolerate partial
+  historical coverage. Historical completeness is a continuing improvement, not a
+  prerequisite for a useful website.
+
+The current media policy remains strict: acquisition requires yt-dlp formats 398
+(AV1, 1280×720, 30 fps) and 251 (Opus), with stream-copy verification and no silent
+fallback. The November 6 Club inspection found 398 but not exact 251 in the returned
+listing, although other Opus variants were offered. Reviewing quality-oriented audio
+selection is the next policy investigation; no fallback has been authorized.
+
+`/usr/local/bin/yt-dlp-new` and the explicit Node 22/FFmpeg/ffprobe paths remain the
+configured tools. Do not change dependencies or sibling projects as part of this
+roadmap update.
 
 ### Future local review interface (not implemented)
 

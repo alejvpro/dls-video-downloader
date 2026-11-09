@@ -261,13 +261,72 @@ Inspect detailed run records under `state/runs/` and fatal diagnostics there or 
 
 The downloader acquires media and preserves source observations without interpreting their content. Future `dls-indexer` work will interpret timestamp comments, identify chapters and connect video/audio episodes. `dls-archiver` owns long-term organization, integrity, backups and eventual descriptive archive names. Neither integration is implemented. Sibling repositories remain independent; do not modify them for downloader work.
 
-## Next priorities — separate authorized phases
+## Roadmap and cross-project dependencies — November 9 update
 
-1. **Preserve YouTube comments.** The independent [manual collector, store and offline refresh policy](COMMENTS.md) support `comments collect VIDEO_ID` and pure deterministic `evaluate_refresh` decisions. The collector retains its 1,000-comment cap, newest-first sorting, zero retries, explicit runtimes, bounded pipes/timeouts and comment-only lock. Snapshots/schema remain version 1. Forward age uses original YouTube publication evidence. Until IrishWeegee is observed, collect initially, daily through day 7, then once during day 14. First positive observation instead schedules one +24-hour confirmation, then early completion; no text edits or later absence restart monitoring. All automatic work stops before day 15, including bounded recovery. Read-only planning and explicitly requested bounded execution are now implemented (see below); supplemental scheduling is installed as documented above. Historical comment backfill remains a separate future workflow; do not weaken the cutoff or parse comments into chapters.
-2. **Local admin interface.** Build a localhost-only browser interface showing recent acquisitions with titles, verified publication dates, YouTube IDs, acquisition timestamps and verification status, plus failures, retries and pending work. Include ambiguous-video Review queues with Keep, Skip and Clear Decision; retain reversible decision history and support search, filtering and past-decision review. Eventually show comment collection status. Direct YouTube-hosted thumbnail URLs are acceptable; no local image cache is necessary. No interface exists yet.
-3. **Historical backfill.** Work backward before October 26, 2026 toward the channel's earliest uploads around June 2021, using bounded date ranges. Reuse inventory, classifications and decisions; review uncertain historical material before downloading. Keep backfill independent from ongoing cron acquisition and never overwrite verified forward acquisitions. Historical publishing formats need evidence-based rules; no backfill workflow exists yet.
+The strategic objective is a reliable, continuously growing, searchable archive.
+Website launch should use available verified coverage and must not wait for all
+historical backfill to finish. The detailed agreed sequence and handoff contracts are
+also recorded in the README roadmap.
 
-Deferred: comment interpretation/chapter generation (Indexer), long-term drive replication (Archiver), possible cron-to-launchd migration, possible private GitHub remote, and refined classification informed by accumulated decisions.
+1. **Stabilize forward video and supplemental capture.** Metadata enrichment and the
+   forward acquisition path have passed supervised live validation. Comment and
+   caption preservation are implemented, and one production caption collection has
+   been validated. The six YouTube acquisition/supplemental cron entries are
+   currently paused; the independent Pushover dispatcher remains active every 15
+   minutes. Before restoring any YouTube job, complete the separate schedule,
+   runtime, and request-budget audit and resolve the strict audio-format question
+   raised by the November 6 Club (`kEMi9MO8dSI`). Its current listing had AV1 398 but
+   not exact Opus 251, while other Opus variants were present. No fallback policy is
+   authorized yet. After a policy decision, use supervised bounded validation and
+   inspect actual scheduled-run results before claiming unattended reliability.
+2. **Begin conservative recent-history collection once forward capture is stable.**
+   The tentative starting boundary is June 1, 2026, not yet finalized. Historical
+   Format Research must document the era's publication patterns and confirm the
+   exact boundary. Keep the work low-rate, resumable, interruptible, and behind
+   forward capture. Reuse retained inventory/source evidence or an approved official
+   date source where it avoids duplicate metadata requests. Every request must use
+   the shared YouTube safety mechanism; no separate cooldown, queue database, or
+   historical job system should emerge by accident.
+3. **Prioritize the main DLS Archiver.** Coordinate storage, portable manifests or
+   equivalent ingestion records, integrity verification, backup handling, and
+   ingestion contracts across video assets and existing podcast assets. The
+   downloader owns source acquisition and its evidence; the Archiver owns durable
+   archive placement, verification, and backup receipts. Operational SQLite is not
+   an archive manifest and must not become a cross-project shared database.
+4. **Build the Indexer and searchable website against available assets.** Index video
+   metadata, preserved captions/comments, podcast metadata, and relationships as
+   verified inputs become available. The website can launch with current coverage;
+   backfill can continue incrementally afterward. The Indexer owns interpretation,
+   text normalization, chapters, relationships, and search, not source-byte
+   rewriting.
+5. **Continue expanding historical coverage.** Extend backward gradually after the
+   researched recent era is understood. Older broadcast formats may require
+   additional research and uncertainty handling; throughput is secondary to safe,
+   auditable progress.
+
+### Handoff contracts to prepare
+
+- **Downloader → Archiver:** stable YouTube ID plus asset kind; verified source and
+  field provenance; relative source path; byte count and SHA-256; retrieval/observed
+  time; source format/track identity; and immutable revision/collection identity.
+  Preserve distinctions among monitoring completion, retrieval coverage, and
+  permanent source availability. Archiver specifies destination, copy/verification,
+  retention, and backup receipts without coupling to downloader SQLite.
+- **Podcast assets → Archiver:** stable item identity, original media/metadata
+  locations, checksum evidence, and update/revision semantics. Coordinate this
+  independently with podcast ownership; do not modify sibling repositories here.
+- **Archiver or verified source records → Indexer:** stable IDs, verified locations,
+  checksum/revision evidence, and provenance so the Indexer can tell unindexed assets
+  from missing or unverified assets. Downloader and Archiver preserve source bytes;
+  Indexer parses and relates captions, timestamp comments, episodes, and segments.
+- **Incremental website launch:** Indexer ingestion must accept partial coverage and
+  later additions. Neither the initial website nor the Archiver handoff should wait
+  for all historical years to be collected.
+
+No implementation, scheduling, backfill, UI, or sibling-project changes are
+authorized by this roadmap note. Continue to coordinate cross-project contracts and
+major milestones through Command Center; keep implementation ownership in the
+specialist project chats.
 
 ### Manual comment validation — November 4, 2026
 
