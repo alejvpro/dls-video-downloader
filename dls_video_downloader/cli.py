@@ -57,6 +57,13 @@ def main(argv=None):
             command.add_argument('id',type=comment_video_id)
             command.add_argument('--authorize',action='store_true')
             command.add_argument('--reviewed',action='store_true')
+    formats = commands.add_parser("formats", help="Metadata-only format inspection for one video")
+    format_commands = formats.add_subparsers(dest="format_command", required=True)
+    format_inspect = format_commands.add_parser("inspect", help="Plan or explicitly execute one safety-gated format inspection")
+    format_inspect.add_argument("id", type=comment_video_id)
+    format_inspect.add_argument("--execute", action="store_true", help="Perform one metadata-only YouTube request")
+    format_inspect.add_argument("--timeout-seconds", type=int, default=180)
+    format_inspect.add_argument("--json", action="store_true")
     comments = commands.add_parser("comments", help="Independent comment collection and read-only planning")
     comment_commands = comments.add_subparsers(dest="comment_command", required=True)
     comment_plan = comment_commands.add_parser("plan", help="Read-only inventory comment refresh plan")
@@ -191,6 +198,33 @@ def main(argv=None):
         except Exception as exc:
             from .operations import safe_text
             print('Shared YouTube safety error: '+safe_text(exc),file=sys.stderr);return 1
+    if args.command == "formats":
+        from . import format_inspection
+        from .operations import safe_text
+        try:
+            result = format_inspection.inspect(args.id, Path(args.db).resolve().parent,
+                                               execute=args.execute, timeout=args.timeout_seconds)
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            elif result["mode"] == "plan":
+                print(f"Plan only: one metadata-only format inspection for {args.id}; no network or writes. Use --execute to run.")
+            else:
+                pair = result["strict_398_251"]
+                print(f"{result['video'].get('title', args.id)} | {args.id} | formats={result['format_listing']['count']}")
+                print("Strict 398 AV1 720p30 + 251 Opus: " + ("available" if pair["available"] else "not verified"))
+                if pair["reasons"]:
+                    print("Reasons: " + ", ".join(pair["reasons"]))
+                for row in result["formats"]:
+                    print(f"{row.get('format_id')} | {row.get('vcodec')}+{row.get('acodec')} | "
+                          f"{row.get('width')}x{row.get('height')} @ {row.get('fps')} fps | "
+                          f"DRM={row.get('has_drm')}")
+            return result.get("exit_code", 0)
+        except safety.Blocked as exc:
+            print(str(exc), file=sys.stderr); return 75
+        except (OperationBusy, ValueError, OSError) as exc:
+            print("Format inspection failed: " + safe_text(exc), file=sys.stderr); return 1
+        except KeyboardInterrupt:
+            return 130
     # No network command may initialize/migrate inventory before admission.
     if args.command in ('discover','run','download'):
         from .youtube_safety import Safety,Blocked

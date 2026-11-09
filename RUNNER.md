@@ -115,6 +115,46 @@ If other jobs or credentials have changed since backup, disable only the DLS blo
 
 Strict 398+251 remains required. Missing AV1 is delayed and reported, never silently substituted. Receipt and coverage problems require operator review. A future launchd migration is outside scope.
 
+### Single-video format diagnostics
+
+Use `formats inspect VIDEO_ID --json` for a **read-only plan**; it performs no
+network request or write. To run one metadata-only inspection, explicitly add
+`--execute` (maximum timeout 180 seconds):
+
+```sh
+python3 -B -m dls_video_downloader formats inspect kEMi9MO8dSI --execute --timeout-seconds 180 --json
+```
+
+The command addresses only the specified watch URL through the configured
+yt-dlp executable and Node runtime, ignores user configuration, disables
+retries, and requests JSON metadata with format descriptions. It disables
+media, subtitle, comment and thumbnail writes. It holds the existing
+nonblocking acquisition/discovery lock, uses the shared YouTube admission
+gate, and journals confirmed blocking responses. It does not create an
+acquisition attempt, media output, or retry-state entry. Stderr is sanitized
+and bounded in `state/runs/formats/`; raw metadata and signed playback URLs are
+never persisted. JSON output includes only allowlisted video and format
+properties plus the strict 398+251 assessment. The assessment uses the same
+predicate as acquisition; it reports format presence/property mismatches
+without changing the required preservation policy. An empty result is
+reported as incomplete, not as proof that the video permanently lacks formats.
+
+Example sanitized result excerpt:
+
+```json
+{
+  "format_listing": {"status": "available", "count": 2, "returned": 2, "truncated": false},
+  "formats": [
+    {"format_id": "398", "vcodec": "av01.0.05M.08", "width": 1280, "height": 720, "fps": 30, "has_drm": false},
+    {"format_id": "251", "vcodec": "none", "acodec": "opus", "has_drm": false}
+  ],
+  "strict_398_251": {"available": true, "video_format_id": "398", "audio_format_id": "251", "reasons": []}
+}
+```
+
+This diagnostic is not an acquisition or a retry. Review the shared safety
+status and operational timing before any supervised live invocation.
+
 ## Activation validation — October 29
 
 The exact runner command was invoked manually in a minimal noninteractive environment at 12:56 a.m. Pacific. Run `2026-10-29T075640.198004+0000-87fb1953` completed successfully at 12:59 a.m.: 25 Live entries, 75 Videos entries, no new IDs, eight full enrichments, zero acquisition attempts and zero failures. No eligible missing Thursday broadcast was identified in those bounded results at that early hour; no ID was forced and there was no polling loop. The three existing acquisitions were skipped and the historical approval was explicitly deferred. A future scheduled check will handle Thursday's show when it is discovered, dated and completed.

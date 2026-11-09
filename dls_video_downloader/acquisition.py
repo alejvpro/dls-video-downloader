@@ -25,6 +25,37 @@ MAX_HEIGHT = 720
 _operation_fd = None
 
 
+def assess_required_formats(metadata):
+    """Apply the existing strict 398+251 preflight predicate without side effects."""
+    rows = metadata.get("formats", []) if isinstance(metadata, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    formats = {str(row.get("format_id")): row for row in rows if isinstance(row, dict)
+               and row.get("format_id") is not None}
+    video, audio = formats.get("398"), formats.get("251")
+    reasons = []
+    if video is None:
+        reasons.append("video_398_missing")
+    else:
+        if video.get("height") != MAX_HEIGHT:
+            reasons.append("video_398_height_mismatch")
+        if video.get("fps") != 30:
+            reasons.append("video_398_fps_mismatch")
+        if not str(video.get("vcodec", "")).startswith("av01"):
+            reasons.append("video_398_codec_mismatch")
+        if video.get("has_drm"):
+            reasons.append("video_398_drm")
+    if audio is None:
+        reasons.append("audio_251_missing")
+    else:
+        if audio.get("acodec") != "opus":
+            reasons.append("audio_251_codec_mismatch")
+        if audio.get("has_drm"):
+            reasons.append("audio_251_drm")
+    return {"available": not reasons, "video_format_id": "398" if video else None,
+            "audio_format_id": "251" if audio else None, "reasons": reasons}
+
+
 def sha256(path):
     h = hashlib.sha256()
     with path.open("rb") as stream:
@@ -216,11 +247,9 @@ def _acquire_locked(db, video_id, root, forward_start=None):
             published, _ = publication(metadata)
             if not published or published < forward_start:
                 raise ValueError("Current source metadata lacks a verified forward-window date")
-        formats = {f["format_id"]: f for f in metadata.get("formats", [])}
-        video, audio = formats.get("398", {}), formats.get("251", {})
-        if (video.get("height") != MAX_HEIGHT or video.get("fps") != 30
-                or not str(video.get("vcodec", "")).startswith("av01") or audio.get("acodec") != "opus"
-                or video.get("has_drm") or audio.get("has_drm")):
+        formats = {str(f["format_id"]): f for f in metadata.get("formats", []) if f.get("format_id") is not None}
+        video, audio = formats.get("398"), formats.get("251")
+        if not assess_required_formats(metadata)["available"]:
             raise ValueError("Required 398 AV1 720p30 + 251 Opus formats unavailable")
         sizes = [f.get("filesize") or f.get("filesize_approx") for f in (video, audio)]
         if not all(isinstance(s, (int, float)) and s > 0 for s in sizes):
