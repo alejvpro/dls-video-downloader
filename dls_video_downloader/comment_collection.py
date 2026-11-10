@@ -207,7 +207,8 @@ def assess(video_id, execution):
 
 
 @safety.scoped(lambda a:Path(a['root']).resolve().parent,'comments')
-def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, before_collect=None):
+def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, before_collect=None,
+            invocation_source='manual', purpose='manual'):
     # Optional runner preflight is invoked under the collector lock, after store
     # initialization and before extraction. Raising prevents network work; returning
     # an integer supplies the remaining invocation/publication timeout budget.
@@ -217,6 +218,8 @@ def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, befo
         raise ValueError("Comment limit must be 1..1000")
     if type(timeout) is not int or not 1 <= timeout <= 600:
         raise ValueError("Process timeout must be 1..600 seconds")
+    if invocation_source not in ('scheduled','manual','other','unknown') or purpose not in ('initial','confirmation','refresh','retry','manual','other','unknown'):
+        raise ValueError('Invalid collection provenance')
     root = Path(root).resolve()
     if root == PROJECT / "state" or root.is_relative_to(PROJECT / "state/acquisitions"):
         raise ValueError("Comment store must be separate from video operational data")
@@ -246,7 +249,8 @@ def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, befo
             configuration = {"max_comments": f"{max_comments},all,all,all,all", "comment_sort": "new",
                              "socket_timeout_seconds": 30, "process_timeout_seconds": timeout,
                              "retries": 0, "sleep_requests_seconds": 1,
-                             "stdout_limit_bytes": STDOUT_LIMIT, "stderr_limit_bytes": STDERR_LIMIT}
+                             "stdout_limit_bytes": STDOUT_LIMIT, "stderr_limit_bytes": STDERR_LIMIT,
+                             "invocation": {"source": invocation_source, "purpose": purpose}}
             result = store.record(video_id, comments, outcome=outcome, coverage=coverage,
                                   cap=max_comments, tool=tool, configuration=configuration,
                                   warnings=warnings, error=error, collected_at=started_at)

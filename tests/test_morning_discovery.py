@@ -268,13 +268,16 @@ class MorningTests(unittest.TestCase):
             return original(*args)
         self.fake=guarded;self.invoke()
 
-    def test_near_video_cron_defers_without_writes(self):
+    def test_near_video_cron_records_deferral_without_network_or_inventory_writes(self):
         for minute in (-3,0,0.5):
             self.now=datetime(2026,11,5,19,tzinfo=timezone.utc)+timedelta(minutes=minute)
             before=self.path.read_bytes();out=self.invoke()
             self.assertEqual(out['stop_reason'],'video_cron_imminent')
             self.assertEqual(self.path.read_bytes(),before)
-        self.assertFalse((self.state/'morning').exists());self.assertEqual(self.calls,[])
+        history=list((self.state/'morning/history').glob('*.json'))
+        self.assertEqual(len(history),3)
+        self.assertTrue(all(json.loads(p.read_text())['stop_reason']=='video_cron_imminent' for p in history))
+        self.assertEqual(self.calls,[])
 
     def test_schedule_dst_uses_pacific_wall_clock(self):
         before=datetime(2026,10,30,16,tzinfo=timezone.utc)

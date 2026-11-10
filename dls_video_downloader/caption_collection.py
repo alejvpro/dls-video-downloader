@@ -107,10 +107,11 @@ def fetch(url,timeout,lock_fd):
 
 @safety.scoped(lambda a:Path(a['root']).resolve().parent,'captions')
 def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', completion_evidence=None,
-            before_collect=None, clock=None, monotonic=None):
+            before_collect=None, clock=None, monotonic=None, invocation_source='manual'):
     if not isinstance(video_id,str) or not VIDEO_ID.fullmatch(video_id):raise ValueError('Expected an 11-character YouTube ID')
     if type(timeout) is not int or not 30<=timeout<=300:raise ValueError('Caption timeout must be 30..300')
     if purpose not in ('manual','initial','refresh','confirmation_24h','confirmation_7d'):raise ValueError('Unsupported caption purpose')
+    if invocation_source not in ('scheduled','manual','other','unknown'):raise ValueError('Unsupported invocation source')
     clock=clock or (lambda:datetime.now(timezone.utc));monotonic=monotonic or time.monotonic
     end=monotonic()+timeout
     root=Path(root).resolve()
@@ -130,6 +131,7 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
             last=history[-1] if history else {}
             recovered={(r['track_id'],r['format']) for r in last.get('formats',[]) if r.get('sha256')} if last.get('technical_failure') and last.get('purpose')==purpose else set()
             record=dict(video_id=video_id,started_at=instant(clock()).isoformat(),purpose=purpose,
+                invocation_source=invocation_source,
                 completion_evidence=completion_evidence,formats=[],tracks=[],availability=[],ambiguities=[],warnings=[],
                 complete=False,technical_failure=False,listing_success=False,outcome='failed',error=None,
                 tool=dict(name='yt-dlp',executable=network.YT_DLP,node_executable=network.NODE,version=None),

@@ -308,6 +308,16 @@ class CaptionTests(unittest.TestCase):
         count=self.mock_fetch.call_count;second=runner.run(self.path,self.root,execute=True,clock=lambda:AT)
         self.assertFalse(second['work']);self.assertEqual(self.mock_fetch.call_count,count)
 
+    def test_scheduled_runner_source_is_retained_in_portable_caption_record(self):
+        self.seed()
+        result=runner.run(self.path,self.root,execute=True,max_videos=1,runtime_seconds=60,
+                          clock=lambda:self.now,monotonic=lambda:self.elapsed,invocation_source='scheduled')
+        self.assertEqual(result['work'][0]['status'],'completed')
+        record=self.history()[0]
+        portable=json.loads((self.root/record['collection_record']).read_text())
+        self.assertEqual(record['invocation_source'],'scheduled')
+        self.assertEqual(portable['invocation_source'],'scheduled')
+
     def test_runner_dry_run_no_artifacts(self):
         self.seed();r=runner.run(self.path,self.root,clock=lambda:AT);self.assertEqual(r['selected_ids'],[VIDEO]);self.assertFalse(self.root.exists());self.mock_listing.assert_not_called()
 
@@ -544,8 +554,9 @@ class CaptionTests(unittest.TestCase):
 
     def test_readonly_real_payload_fixtures_if_available(self):
         root=Path('/tmp/dls-caption-payload-20261105')
-        if not root.exists():self.skipTest('Optional supervised fixtures not retained')
         expected={'json3':'b49b8a4427ccbe8c70bc76dafb44f0832fdf19a49ffa8d0fbe759132babce18e','vtt':'46eb621ead413f3b6480d980e37f1c2d8e3595cfd93b53dea0c78d3b14d8312a'}
+        if not all((root/f'MbO7y_90zUI.en-orig.{fmt}').is_file() for fmt in expected):
+            self.skipTest('Optional supervised payload fixtures not retained')
         for fmt,sha in expected.items():
             raw=(root/f'MbO7y_90zUI.en-orig.{fmt}').read_bytes();assets.validate(raw,fmt);self.assertEqual(assets.digest(raw),sha)
 

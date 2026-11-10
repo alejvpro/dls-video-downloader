@@ -2,10 +2,12 @@
 from contextlib import closing
 from datetime import datetime, timedelta, timezone, date
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
 import time
+import uuid
 from zoneinfo import ZoneInfo
 
 from . import youtube_safety as safety
@@ -34,7 +36,8 @@ def next_video_run(now):
 
 @safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'morning-discovery')
 def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_requests=20,
-             runtime_seconds=180, start=DEFAULT_START, clock=None, monotonic=None, deadline=None):
+             runtime_seconds=180, start=DEFAULT_START, clock=None, monotonic=None, deadline=None,
+             invocation_source='manual'):
     """Explicit metadata-writing command; tests must supply disposable paths.
 
     Shared operation lock preserves existing inventory-writer serialization. Refuse
@@ -49,7 +52,10 @@ def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_r
     monotonic = monotonic or time.monotonic
     now = clock()
     slot = next_video_run(now)
-    result = {'mode': 'morning-metadata', 'started_at': now.isoformat(),
+    if invocation_source not in ('scheduled','manual','other','unknown'):
+        raise ValueError('Invalid invocation source')
+    result = {'mode': 'morning-metadata', 'run_id':uuid.uuid4().hex, 'trigger':invocation_source,
+              'started_at': now.isoformat(),
               'limits': {'streams': streams_limit, 'videos': videos_limit, 'max_metadata_requests': max_metadata_requests,
                          'runtime_seconds': runtime_seconds},
               'next_video_run': slot.isoformat(), 'new_ids': [], 'encountered': {},
@@ -59,10 +65,13 @@ def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_r
     guard_slot = next_video_run(now - timedelta(seconds=60))
     if (guard_slot - now).total_seconds() <= runtime_seconds + 60:
         result['stop_reason'] = 'video_cron_imminent'
+        _save_receipt(Path(inventory_path).resolve().parent/'morning',result)
         return result
-    try:safety.current().ensure('morning_discovery')
+    try:
+        result['shared_safety']=safety.current().status(now)
+        safety.current().ensure('morning_discovery')
     except safety.Blocked as exc:
-        result.update(stop_reason=str(exc),exit_code=75);return result
+        result.update(stop_reason=str(exc),exit_code=75);_save_receipt(Path(inventory_path).resolve().parent/'morning',result);return result
     state = Path(inventory_path).resolve().parent
     phase_deadline = monotonic() + runtime_seconds
     if deadline is not None:
@@ -74,11 +83,42 @@ def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_r
             if existing.execute('PRAGMA user_version').fetchone()[0] != 3:
                 raise ValueError('Morning discovery requires existing inventory schema 3; no migrations')
         with closing(connect(inventory_path, timeout=1)) as db:
-            return _discover(db, state, result, start, clock, monotonic,
+            completed = _discover(db, state, result, start, clock, monotonic,
                              streams_limit, videos_limit, max_metadata_requests, phase_deadline)
+            _save_receipt(state/'morning',completed)
+            return completed
+
+
+def _save_receipt(directory,result,*,keep=120,days=45):
+    """Keep bounded sanitized morning receipts; the latest report remains compatible."""
+    directory.mkdir(parents=True,exist_ok=True)
+    result.setdefault('finished_at',datetime.now(timezone.utc).isoformat())
+    result.setdefault('duration_seconds',0)
+    result.setdefault('runtime_outcome',result.get('stop_reason') or ('complete' if result.get('exit_code')==0 else 'incomplete'))
+    result.setdefault('shared_safety',{'status':'not_checked','reason':'preflight_refused_before_safety_admission'})
+    result.setdefault('shared_safety_after',result['shared_safety'])
+    raw=json.dumps(result,ensure_ascii=False,indent=2).encode('utf-8')
+    if len(raw)>256*1024:raise ValueError('Morning receipt exceeds size limit')
+    latest=directory/'last-run.json';latest.write_bytes(raw)
+    history=directory/'history';history.mkdir(exist_ok=True)
+    name=f"{result.get('started_at','unknown').replace(':','').replace('-','')}-{result.get('run_id',uuid.uuid4().hex)}.json"
+    path=history/name
+    temporary=history/('.'+name+'.tmp')
+    try:
+        with temporary.open('wb') as stream:
+            stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,path)
+    finally:
+        if temporary.exists():temporary.unlink()
+    cutoff=datetime.now(timezone.utc).timestamp()-days*86400
+    entries=sorted(history.glob('*.json'),key=lambda p:(p.stat().st_mtime,p.name))
+    for old in entries[:-keep]:old.unlink(missing_ok=True)
+    for old in entries:
+        if old.exists() and old.stat().st_mtime<cutoff:old.unlink(missing_ok=True)
 
 
 def _discover(db, state, result, start, clock, monotonic, streams, videos, maximum, deadline):
+    started=monotonic()
     directory = state / 'morning'
     directory.mkdir(parents=True, exist_ok=True)
     common = metadata_command()
@@ -93,6 +133,7 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
     result['retry_deferred'] = []
     result['attempted'] = []
     result['metadata_requests'] = 0
+    result['operation_attempts'] = []
 
     def extract(args, log):
         remaining = min(deadline - monotonic(),
@@ -102,6 +143,8 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
             return None
         safety.current().ensure('metadata')
         result['metadata_requests'] += 1
+        result['operation_attempts'].append({'kind':'channel_listing' if '--flat-playlist' in args else 'full_metadata',
+            'scope':'streams' if args[-1].endswith('/streams') else 'videos' if args[-1].endswith('/videos') else args[-1].rsplit('=',1)[-1]})
         if '--no-playlist' in args:
             result['attempted'].append(args[-1].split('=')[-1])
         return json.loads(media.run(common + args, directory / log, min(60, int(remaining))))
@@ -236,6 +279,7 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
         result.update(stop_reason='interrupted', exit_code=130)
         return result
     finally:
+        result['duration_seconds']=max(0,monotonic()-started)
         requested = {'live'} | ({'videos'} if videos else set())
         pending = result.get('forward_scope',{}).get('pending',[])
         unattempted = sorted(set(pending)-set(result['attempted']))
@@ -249,9 +293,17 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
             'unattempted_ids': unattempted,
             'failed_ids': [f['id'] for f in result['failures'] if f['id'] is not None],
             'scope': 'bounded_heads_and_recent_source_evidence'}
+        result['tab_coverage']={name:{'requested_limit':limit,'attempted':any(a['kind']=='channel_listing' and a['scope']==name for a in result.get('operation_attempts',[])),
+            'entries_observed':result.get('encountered',{}).get(name,0),'cap_hit':bool(limit and result.get('encountered',{}).get(name,0)>=limit),
+            'complete':name in result.get('encountered',{}) and result.get('exit_code')==0 and
+                        result.get('encountered',{}).get(name,0)<limit}
+            for name,limit in (('streams',streams),('videos',videos))}
         if not result['forward_coverage']['complete'] and result['exit_code']==0:
             result['exit_code']=2
         result['finished_at'] = clock().isoformat()
+        result['runtime_outcome']=result.get('stop_reason') or ('complete' if result['forward_coverage']['complete'] else 'incomplete')
+        try:result['shared_safety_after']=safety.current().status(clock())
+        except safety.Blocked:result['shared_safety_after']={'status':'unavailable','network_allowed':False}
         if json.dumps(retry,sort_keys=True) != prior_retry:
             forward.save_state(directory,retry)
         write_log(directory / 'last-run.json', json.dumps(result, ensure_ascii=False, indent=2))

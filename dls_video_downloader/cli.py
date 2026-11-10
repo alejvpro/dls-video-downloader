@@ -80,6 +80,7 @@ def main(argv=None):
     runner.add_argument("--max-videos", type=int, default=2)
     runner.add_argument("--max-comments", type=int, default=1000)
     runner.add_argument("--runtime-seconds", type=int, default=600)
+    runner.add_argument('--scheduled',action='store_true',help='Record scheduled invocation provenance')
     collect = comment_commands.add_parser("collect")
     collect.add_argument("id", type=comment_video_id)
     collect.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
@@ -96,6 +97,7 @@ def main(argv=None):
         if name=='run':
             command.add_argument('--execute',action='store_true')
             command.add_argument('--max-videos',type=int,default=1)
+            command.add_argument('--scheduled',action='store_true',help='Record scheduled invocation provenance')
         if name!='collect':command.add_argument('--start-date',type=iso_date,default=DEFAULT_START)
     morning = commands.add_parser("discover-morning", help="Bounded metadata-only morning discovery/status; writes inventory")
     morning.add_argument("--streams-limit", type=int, default=10)
@@ -104,8 +106,10 @@ def main(argv=None):
     morning.add_argument("--runtime-seconds", type=int, default=180)
     morning.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
     morning.add_argument("--json", action="store_true")
+    morning.add_argument('--scheduled',action='store_true',help='Record scheduled trigger in discovery receipt')
     cycle = commands.add_parser("cycle", help="Supplemental discovery/comments/opt-in captions; read-only unless --execute")
     cycle.add_argument("--execute", action="store_true")
+    cycle.add_argument('--scheduled',action='store_true',help='Record scheduled invocation provenance in new attempts')
     cycle.add_argument('--captions',action='store_true',help='Explicitly enable caption execution; requires --execute')
     cycle.add_argument('--caption-root',type=Path)
     cycle.add_argument('--caption-seconds',type=int,default=180)
@@ -159,7 +163,20 @@ def main(argv=None):
         command.add_argument("--end-date", type=iso_date)
         command.add_argument("--json", action="store_true")
         command.add_argument("--details", action="store_true")
+    effectiveness=commands.add_parser('supplemental-report',help='Read-only comment/caption effectiveness report')
+    effectiveness.add_argument('--start-date',type=iso_date,required=True)
+    effectiveness.add_argument('--end-date',type=iso_date,required=True)
+    effectiveness.add_argument('--store-root',type=Path,default=Path(__file__).resolve().parent.parent/'state/comments')
+    effectiveness.add_argument('--caption-root',type=Path,default=Path(__file__).resolve().parent.parent/'state/captions')
+    effectiveness.add_argument('--json',action='store_true')
     args = parser.parse_args(argv)
+    if args.command=='supplemental-report':
+        from .supplemental_report import build,render
+        try:
+            result=build(args.db,args.store_root,args.caption_root,start=args.start_date,end=args.end_date)
+            print(json.dumps(result,ensure_ascii=False,indent=2) if args.json else render(result));return 0
+        except Exception as exc:
+            print(f'Supplemental report failed: {exc}',file=sys.stderr);return 1
     if args.command=='notifications':
         from . import notifications as notifier, pushover
         try:
@@ -243,7 +260,8 @@ def main(argv=None):
                 renderer=caption_planning.render
             elif args.caption_command=='run':
                 result=caption_runner.run(args.db,args.store_root,execute=args.execute,max_videos=args.max_videos,
-                    runtime_seconds=args.runtime_seconds,start=args.start_date)
+                    runtime_seconds=args.runtime_seconds,start=args.start_date,
+                    invocation_source='scheduled' if args.scheduled else 'manual')
                 renderer=caption_runner.render
             else:
                 # Manual collection is explicit, but still yields to acquisition
@@ -275,7 +293,8 @@ def main(argv=None):
                          videos_limit=args.videos_limit,max_metadata_requests=args.max_metadata_requests,
                          max_videos=args.max_videos,max_comments=args.max_comments,start=args.start_date,
                          captions=args.captions,caption_root=args.caption_root,caption_seconds=args.caption_seconds,
-                         max_caption_videos=args.max_caption_videos)
+                         max_caption_videos=args.max_caption_videos,
+                         invocation_source='scheduled' if args.scheduled else 'manual')
             print(json.dumps(result,ensure_ascii=False,indent=2) if args.json else render(result))
             return result["exit_code"]
         except KeyboardInterrupt:
@@ -291,7 +310,8 @@ def main(argv=None):
         from .operations import safe_text
         try:
             result = discover(args.db, streams_limit=args.streams_limit, videos_limit=args.videos_limit,
-                              max_metadata_requests=args.max_metadata_requests, runtime_seconds=args.runtime_seconds, start=args.start_date)
+                              max_metadata_requests=args.max_metadata_requests, runtime_seconds=args.runtime_seconds, start=args.start_date,
+                              invocation_source='scheduled' if args.scheduled else 'manual')
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result))
             return result["exit_code"]
         except OperationBusy as exc:
@@ -310,7 +330,8 @@ def main(argv=None):
         from .comment_collection import safe_diagnostic
         try:
             result = run(args.db, args.store_root, execute=args.execute, max_videos=args.max_videos,
-                         max_comments=args.max_comments, runtime_seconds=args.runtime_seconds, start=args.start_date)
+                         max_comments=args.max_comments, runtime_seconds=args.runtime_seconds, start=args.start_date,
+                         invocation_source='scheduled' if args.scheduled else 'manual')
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result))
             return result["exit_code"]
         except KeyboardInterrupt:

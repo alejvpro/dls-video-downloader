@@ -1,5 +1,40 @@
 # DLS video downloader handoff
 
+## Forward observability and restoration notes (proposed; not activated)
+
+The read-only `supplemental-report` and explicit invocation provenance support a
+two-to-four-week forward effectiveness review. Proposed windows are 9:25 AM
+metadata discovery across Streams and Videos; 10:30 AM comments plus captions;
+11 AM, 2 PM, 6 PM and 9 PM acquisition opportunities (one acquisition/run
+proposal); and 7:30 PM due supplemental work. The independent Pushover dispatcher
+remains every 15 minutes. All six YouTube collection jobs remain paused; this is
+not an installed schedule or activation authorization.
+
+The report separates Daily Shows and Clubs, actual attempts from deferrals,
+unknown dates, comment coverage uncertainty, IrishWeegee observations and same-ID
+revisions, advertised original captions from complete JSON3+VTT preservation, and
+current due work. A full `was_live` import time is only a completion-observed
+proxy. Review first-attempt outcomes after two to four weeks; do not infer
+exhaustive comments or guide completeness from author presence, length or
+timestamps.
+
+Before restoration, decide how to drain the oldest-first comment/caption backlog
+without indefinitely delaying new episodes, review caption capacity under normal
+arrival volume, and account for supplemental workers probing rather than holding
+the acquisition lock. The 180-second discovery ceiling and other budgets were not
+changed. Forward logic must recover missed videos after multi-day outages within
+the fixed forward boundary; historical processing stays separate.
+
+Historical work begins only after forward stability and Historical Format
+Research establishes its boundary. Expected design: bounded Streams/Videos flat
+listings, reviewed Daily Show/Club selection, initially about one historical
+acquisition/day, one usable comment collection and one complete original-caption
+collection per historical video, no routine freshness confirmations, retry only
+failures/incomplete assets, and never displace forward work. Future Archiver and
+Indexer consumers discover assets/revisions by stable video and asset identity,
+including late revisions and gaps inside covered ranges; date high-water marks
+must not hide them.
+
 ## Forward enrichment correction (offline implementation)
 
 Forward enrichment now derives initial work from retained flat/full inventory

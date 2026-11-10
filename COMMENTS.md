@@ -1,5 +1,22 @@
 # Comment collection and preservation
 
+## Invocation provenance and cohort review
+
+New comment attempts store invocation source and planned purpose in the existing
+configuration JSON and immutable portable collection record. Future cron commands
+pass `--scheduled`; normal manual commands remain `manual`. Purpose is initial,
+confirmation, refresh, retry, manual, or another established/unknown value.
+Legacy attempts lacking these fields remain unchanged and report `unknown`.
+
+Use `supplemental-report --start-date YYYY-MM-DD --end-date YYYY-MM-DD --json`
+for an inclusive Pacific-date cohort. It distinguishes actual attempts from
+not-attempted work, usable returned comments from IrishWeegee sightings, and
+preserves coverage uncertainty. Stable author channel ID and comment ID are used.
+Snapshots supply descriptive first/latest text length and line counts for changed
+revisions. Presence, length or timestamp counts do not establish guide
+completeness. Provenance is unknown for legacy data rather than inferred from the
+command used.
+
 `dls_video_downloader.comments.CommentStore` stores **yt-dlp-extracted comment
 objects**, not raw YouTube API responses. An independent manual collector retrieves
 one explicit video's comments and submits them to this store. A bounded runner

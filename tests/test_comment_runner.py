@@ -85,6 +85,17 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(log,out)
         self.assertLess((self.root/'runner/last-run.json').stat().st_size,runner.REPORT_LIMIT)
 
+    def test_scheduled_invocation_and_planned_purpose_are_portable(self):
+        self.ingest()
+        out=self.invoke(invocation_source='scheduled',max_videos=1)
+        self.assertEqual(out['exit_code'],0)
+        with CommentStore(self.root) as store:
+            row=store.db.execute('SELECT attempt_id,configuration_json FROM collection_attempts').fetchone()
+            provenance=json.loads(row['configuration_json'])['invocation']
+            portable=json.loads(store.export_attempt(row['attempt_id']).read_text())
+        self.assertEqual(provenance,{'source':'scheduled','purpose':'initial'})
+        self.assertEqual(portable['collection']['configuration']['invocation'],provenance)
+
     def test_one_video_and_comment_budget(self):
         self.ingest();self.ingest(IDS[1])
         out=self.invoke(max_videos=1,max_comments=7)

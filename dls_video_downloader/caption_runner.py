@@ -22,7 +22,7 @@ def cooldown(inventory_path, root):
 
 @safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'caption-runner')
 def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=1, runtime_seconds=180,
-        start=DEFAULT_START, clock=None, monotonic=None, deadline=None):
+        start=DEFAULT_START, clock=None, monotonic=None, deadline=None, invocation_source='manual'):
     if type(max_videos) is not int or not 1<=max_videos<=2:raise ValueError('Caption max videos must be 1..2')
     if type(runtime_seconds) is not int or not 30<=runtime_seconds<=300:raise ValueError('Caption runtime must be 30..300')
     clock=clock or (lambda:datetime.now(timezone.utc));monotonic=monotonic or time.monotonic
@@ -59,7 +59,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=1, runti
                         preflight()
                         return max(0,math.floor(end-monotonic()))
                     collected=caption_collection.collect(video,root=root,timeout=min(300,budget),purpose=item['refresh']['purpose'],
-                        completion_evidence=item['completion_evidence'],before_collect=remaining_preflight,clock=clock,monotonic=monotonic)
+                        completion_evidence=item['completion_evidence'],before_collect=remaining_preflight,clock=clock,monotonic=monotonic,
+                        invocation_source=invocation_source)
                     work.update(status='failed' if collected['exit_code'] else 'completed',outcome=collected['outcome'],
                         attempt_id=collected['attempt_id'],collection_record=collected['collection_record'],
                         complete=collected['complete'],started_at=collected['started_at'],finished_at=collected['finished_at'])

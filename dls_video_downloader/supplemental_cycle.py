@@ -39,7 +39,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
         runtime_seconds=600, discovery_seconds=180, comment_seconds=600,
         streams_limit=10, videos_limit=0, max_metadata_requests=20, max_videos=2,
         max_comments=1000, start=DEFAULT_START, clock=None, monotonic=None,
-        captions=False, caption_root=None, caption_seconds=180, max_caption_videos=1):
+        captions=False, caption_root=None, caption_seconds=180, max_caption_videos=1,
+        invocation_source='manual'):
     """No execution without explicit intent. All external work is delegated.
 
     Discovery, comments and opt-in captions retain independent asset histories.
@@ -159,7 +160,7 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
                         try:
                             metadata = morning_discovery.discover(inventory_path, streams_limit=streams_limit,
                                 videos_limit=videos_limit, max_metadata_requests=max_metadata_requests, runtime_seconds=budget,
-                                start=start, clock=clock, monotonic=monotonic,
+                                start=start, clock=clock, monotonic=monotonic,invocation_source=invocation_source,
                                 deadline=min(deadline,phase_start+budget))
                             requests = metadata.get('metadata_requests',0)
                             if metadata['exit_code'] == 130:
@@ -216,6 +217,7 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
                             max_videos=max_videos,max_comments=max_comments,runtime_seconds=budget,
                             start=start,clock=clock,monotonic=monotonic,
                             acquisition_lock=inventory_path.parent/'acquisitions/.acquisition.lock',
+                            invocation_source=invocation_source,
                             deadline=min(deadline,phase_start+budget))
                         work=comments['work']
                         completed=sum(w['status']=='completed' for w in work)
@@ -262,7 +264,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
             else:
                 try:
                     cap=caption_runner.run(inventory_path,caption_root,execute=True,max_videos=max_caption_videos,
-                        runtime_seconds=budget,start=start,clock=clock,monotonic=monotonic,deadline=deadline)
+                        runtime_seconds=budget,start=start,clock=clock,monotonic=monotonic,deadline=deadline,
+                        invocation_source=invocation_source)
                     work=cap['work'];succeeded=sum(w['status']=='completed' for w in work)
                     failed=sum(w['status']=='failed' for w in work)
                     state=('partially_successful' if succeeded or any(w.get('outcome')=='partial' for w in work) else 'failed') if failed else ('successful' if succeeded else 'deferred' if cap['stop_reason'] else 'skipped')

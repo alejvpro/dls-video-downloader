@@ -1,5 +1,13 @@
 # Independent original-English caption preservation
 
+New caption attempt records include explicit `invocation_source` beside the
+existing planner `purpose`. Future cron commands should pass `--scheduled`;
+manual commands keep their current default. Legacy records remain valid and
+report source as unknown. The read-only `supplemental-report` separates original
+English track-listing evidence, independent JSON3/VTT outcomes, complete
+preservation attempts, confirmations, revisions and outstanding work. An
+advertised track is not the same as successful preservation of both payloads.
+
 Implemented and offline-tested. One supervised production collection was authorized
 but YouTube blocked its metadata lookup; no production caption payloads have been
 retrieved. **Unattended caption activation is not authorized.** Existing scheduled cycle

@@ -111,7 +111,8 @@ def _summary(item):
 @safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'comment-runner')
 def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
         max_comments=1000, runtime_seconds=600, start=DEFAULT_START,
-        clock=None, monotonic=None, acquisition_lock=None, deadline=None):
+        clock=None, monotonic=None, acquisition_lock=None, deadline=None,
+        invocation_source='manual'):
     """Run sequentially under one deadline. Clock seams are for offline tests only."""
     if type(max_videos) is not int or not 1 <= max_videos <= 10:
         raise ValueError('max videos must be 1..10')
@@ -181,7 +182,11 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
                         # Collector repeats preflight under its own lock, after
                         # opening storage and immediately before starting extraction.
                         collected = collect(video_id, root=root, max_comments=max_comments,
-                                            timeout=600, before_collect=preflight)
+                                            timeout=600, before_collect=preflight,
+                                            invocation_source=invocation_source,
+                                            purpose=('retry' if work['candidate']['phase']=='retry' else
+                                                     'confirmation' if work['candidate']['collection_kind']=='confirmation' else
+                                                     'initial' if work['candidate']['collection_kind']=='initial' else 'refresh'))
                         work.update(status='failed' if collected['exit_code'] else 'completed',
                                     reason=collected['outcome'], attempt_id=collected.get('attempt_id'),
                                     outcome=collected['outcome'], retrieved_count=collected.get('retrieved_count'),

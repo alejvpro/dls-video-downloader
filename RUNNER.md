@@ -3,6 +3,82 @@
 > restoration has been run. Historical activation schedules below are not active.
 > See [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md) for state, inspection and recovery.
 
+## Forward collection observability (implementation; schedule not installed)
+
+Read-only cohort report:
+
+```sh
+python3 -B -m dls_video_downloader --db state/inventory.sqlite3 supplemental-report \
+  --start-date 2026-11-01 --end-date 2026-11-21 --json
+```
+
+The inclusive date range uses Pacific episode/publication dates. The report groups
+Daily Shows and The Club, separates eligible known videos with no attempt from
+unknown-date selected IDs, and reads existing catalogs and morning receipts
+without initializing them. Collection times retain their stored timestamps. A
+full `was_live` import time is a completion-observed proxy, not broadcast end.
+Uncertain comment coverage remains unknown; missing IrishWeegee under uncertain
+coverage is not a negative finding. Text length, line count and revision hashes
+are descriptive only; the future Indexer owns interpretation.
+
+New comment records store `invocation.source` and planned `purpose` in the
+existing configuration JSON/portable record. Caption records store explicit
+`invocation_source` beside planner purpose. Values include scheduled, manual,
+other, or unknown. Command names do not imply scheduled execution; future cron
+commands must pass `--scheduled`. Existing manual invocations remain unchanged,
+and legacy records report unknown without migration.
+
+`discover-morning` retains `state/morning/last-run.json` and sanitized receipts
+under `state/morning/history/`. Retention is at most 120 newest receipts and 45
+days, whichever limit is reached first. Only operational diagnostic receipts are
+pruned; asset and database history is untouched.
+
+### Proposed schedule (not installed or authorized)
+
+- 9:25 AM Pacific: metadata-only discovery of both Streams and Videos tabs.
+- 10:30 AM: supplemental comments plus captions, without discovery.
+- 11 AM, 2 PM, 6 PM, 9 PM: independent acquisition opportunities; one acquisition
+  per run is the audit proposal.
+- 7:30 PM: due supplemental comments and captions, without discovery.
+- Independent Pushover dispatcher: every 15 minutes.
+
+Proposed invocation forms (not installed):
+
+```sh
+python3 -B -m dls_video_downloader discover-morning --streams-limit 10 --videos-limit 10 --max-metadata-requests 20 --runtime-seconds 180 --scheduled --json
+python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 2 --max-comments 1000 --max-caption-videos 1 --runtime-seconds 600 --comment-seconds 420 --caption-seconds 180 --json
+python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --quiet
+```
+
+The supplemental cycle's 600-second ceiling would end the 10:30 run by 10:40,
+20 minutes before the proposed 11 AM acquisition. The 7:30 PM cycle uses the
+same command and limits, without discovery. Proposed acquisition limits preserve
+the existing listing/enrichment caps while reducing media acquisitions to one.
+
+All six YouTube collection cron entries remain paused. The 180-second morning
+discovery ceiling is unchanged. Comment/caption backlogs are oldest-due-first and
+can delay new-show initial attempts; caption capacity should be reviewed after
+normal arrivals. Acquisition runs serialize with each other. Supplemental work
+probes but does not hold the acquisition lock, leaving a cross-workflow start
+race. No priorities, catch-up, locking, budgets or runtime behavior changed here.
+Forward discovery must recover missed videos after multi-day outages within the
+fixed authorized forward boundary, separately from historical backfill.
+
+A late or uncompleted show remains ineligible until metadata verifies completion;
+the 10:30 window does not guarantee that captions or an expanded guide are ready.
+The existing 24-hour comment confirmation remains unchanged. No same-day special
+refresh was added.
+
+Historical work begins only after forward stability and Historical Format
+Research establishes the easy-era boundary. Future historical inventory should
+use bounded Streams/Videos flat listings and reviewed Daily Show/Club selection,
+starting near one media acquisition/day. It must not displace forward work or
+bypass shared safety. Historical comments need one usable collection and captions
+one complete original-caption collection, with no routine freshness confirmations;
+failures/incomplete assets remain retryable. Future Archiver and Indexer consumers
+must discover assets/revisions by stable video and asset identity, including gaps
+inside covered date ranges, not by date high-water marks.
+
 # Scheduled forward acquisition runner
 
 Cron was activated on October 29, 2026 at 1:01 a.m. Pacific with one labeled entry and four daily checks. Use the same command for a manual run:
