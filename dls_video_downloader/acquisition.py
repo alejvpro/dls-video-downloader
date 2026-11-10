@@ -22,38 +22,197 @@ NODE = "/Users/alejandroveloz/.nvm/versions/node/v22.23.4/bin/node"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 FFPROBE = "/opt/homebrew/bin/ffprobe"
 MAX_HEIGHT = 720
+MAX_WIDTH = 1280
 _operation_fd = None
 
 
-def assess_required_formats(metadata):
-    """Apply the existing strict 398+251 preflight predicate without side effects."""
+def _is_drm(value):
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "yes", "1"))
+
+
+def _language_tag(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip().replace("_", "-").lower()
+    return value or None
+
+
+def _language(value):
+    tag = _language_tag(value)
+    return tag.split("-", 1)[0] if tag else None
+
+
+def _audio_identity(row, metadata):
+    """Return conservative source-language evidence for a yt-dlp audio format."""
+    fmt_id = str(row.get("format_id", ""))
+    note = " ".join(str(row.get(key, "")) for key in ("format_note", "format", "audio_track"))
+    text = (fmt_id + " " + note).lower()
+    if re.search(r"\b(dub(?:bed)?|translated|translation|auto[- ]?dub)\b", text):
+        return None, "explicitly_dubbed_or_translated"
+    lang = _language_tag(row.get("language"))
+    source = _language(metadata.get("language") or metadata.get("original_language"))
+    explicit_original = (re.search(r"\boriginal\b", note, re.I)
+                         or re.search(r"(?:^|-)orig(?:$|-)", fmt_id, re.I))
+    if explicit_original and lang and source and _language(lang) != source:
+        return None, "source_language_conflict"
+    if explicit_original:
+        return lang or source or "unknown", "explicit_original_track"
+    if lang and source and _language(lang) == source:
+        return lang, "matches_video_source_language"
+    # yt-dlp's unsuffixed 251 is the primary audio-only rendition used by the
+    # established workflow. Preserve compatibility when its language label is
+    # omitted, but do not extend this assumption to suffixed/dub variants.
+    if fmt_id == "251" and not lang:
+        return source or "unknown", "legacy_primary_audio_format"
+    return None, "original_language_unverified"
+
+
+def _audio_codec(row):
+    codec = str(row.get("acodec") or "").lower()
+    if codec == "opus":
+        return "opus"
+    if codec == "aac" or codec.startswith("mp4a."):
+        return "aac"
+    return None
+
+
+def _audio_rank(row, codec, language_evidence, duration=None):
+    """Stable preference: non-DRC, quality evidence, efficient codec, size, ID."""
+    drc = bool(re.search(r"(?:^|[-\s])drc(?:$|[-\s])",
+                         str(row.get("format_id", "")) + " " + str(row.get("format_note", "")), re.I))
+    abr = row.get("abr")
+    abr = float(abr) if isinstance(abr, (int, float)) and abr > 0 else None
+    estimated = False
+    size = row.get("filesize") or row.get("filesize_approx")
+    if abr is None and isinstance(size, (int, float)) and size > 0 and isinstance(duration, (int, float)) and duration > 0:
+        abr = float(size) * 8 / float(duration) / 1000
+        estimated = True
+    quality = row.get("quality")
+    quality = float(quality) if isinstance(quality, (int, float)) else None
+    size = int(size) if isinstance(size, (int, float)) and size > 0 else None
+    # If bitrate evidence is comparable (within 15%), favor Opus for storage
+    # efficiency. Otherwise prefer the better evidenced bitrate.
+    primary = 0 if str(row.get("format_id")) == "251" else 1
+    return drc, abr, quality, 0 if codec == "opus" else 1, primary, size if size is not None else float("inf"), str(row.get("format_id", "")), estimated
+
+
+def select_formats(metadata):
+    """Select strict format 398 plus confidently original Opus/AAC audio."""
+    metadata = metadata if isinstance(metadata, dict) else {}
     rows = metadata.get("formats", []) if isinstance(metadata, dict) else []
     if not isinstance(rows, list):
         rows = []
     formats = {str(row.get("format_id")): row for row in rows if isinstance(row, dict)
                and row.get("format_id") is not None}
-    video, audio = formats.get("398"), formats.get("251")
+    video = formats.get("398")
     reasons = []
     if video is None:
         reasons.append("video_398_missing")
     else:
+        if video.get("width") != MAX_WIDTH:
+            reasons.append("video_398_width_mismatch")
         if video.get("height") != MAX_HEIGHT:
             reasons.append("video_398_height_mismatch")
         if video.get("fps") != 30:
             reasons.append("video_398_fps_mismatch")
         if not str(video.get("vcodec", "")).startswith("av01"):
             reasons.append("video_398_codec_mismatch")
-        if video.get("has_drm"):
+        if _is_drm(video.get("has_drm")):
             reasons.append("video_398_drm")
-    if audio is None:
-        reasons.append("audio_251_missing")
+    candidates = []
+    rejected = {"not_audio_only": 0, "unsupported_codec": 0, "drm": 0, "size_unknown": 0,
+                "dubbed_or_translated": 0, "language_unverified": 0}
+    for row in formats.values():
+        codec = _audio_codec(row)
+        if row.get("vcodec") != "none":
+            rejected["not_audio_only"] += 1
+            continue
+        if codec is None:
+            rejected["unsupported_codec"] += 1
+            continue
+        if _is_drm(row.get("has_drm")):
+            rejected["drm"] += 1
+            continue
+        language, evidence = _audio_identity(row, metadata)
+        if language is None:
+            key = "dubbed_or_translated" if evidence == "explicitly_dubbed_or_translated" else "language_unverified"
+            rejected[key] += 1
+            continue
+        size = row.get("filesize") or row.get("filesize_approx")
+        if not isinstance(size, (int, float)) or size <= 0:
+            rejected["size_unknown"] += 1
+            continue
+        candidates.append((row, codec, language, evidence))
+    if candidates:
+        # Prefer non-DRC first. Among alternatives within 15% bitrate, Opus is
+        # favored; otherwise bitrate determines quality. Remaining ties use size
+        # and stable format ID for reproducible selection.
+        duration = metadata.get("duration")
+        rank = lambda item: _audio_rank(item[0], item[1], item[3], duration)
+        non_drc = [item for item in candidates if not rank(item)[0]]
+        pool = non_drc or candidates
+        best_bitrate = max((rank(item)[1] or 0) for item in pool)
+        if best_bitrate:
+            comparable = [item for item in pool
+                          if (rank(item)[1] is None or rank(item)[1] >= best_bitrate * 0.85)]
+            pool = comparable or pool
+        else:
+            qualities = [rank(item)[2] for item in pool if rank(item)[2] is not None]
+            if qualities:
+                best_quality = max(qualities)
+                pool = [item for item in pool if rank(item)[2] == best_quality]
+        audio_row, audio_codec, language, evidence = min(
+            pool, key=lambda item: (0 if item[1] == "opus" else 1,
+                                    -(rank(item)[1] or 0),
+                                    -(rank(item)[2] or 0),
+                                    rank(item)[4],
+                                    rank(item)[5],
+                                    str(item[0].get("format_id", ""))))
+        audio_rank = _audio_rank(audio_row, audio_codec, evidence, duration)
+        selected_drc = audio_rank[0]
+        size = audio_row.get("filesize") or audio_row.get("filesize_approx")
+        abr = audio_rank[1]
+        fallback = audio_codec == "aac"
+        rationale = ("DRC fallback: no suitable non-DRC original-language rendition"
+                     if selected_drc else "selected original-language rendition; non-DRC preferred")
+        if fallback:
+            rationale += "; AAC selected because no comparable suitable Opus rendition was selected"
+        audio_evidence = {"codec": audio_codec, "language": language,
+                          "language_evidence": evidence, "drc": selected_drc,
+                          "drm": audio_row.get("has_drm") if isinstance(audio_row.get("has_drm"), bool) else "unknown",
+                          "abr_kbps": abr if isinstance(abr, (int, float)) else None,
+                          "abr_estimated_from_size_and_duration": audio_rank[7],
+                          "quality": audio_row.get("quality") if isinstance(audio_row.get("quality"), (int, float)) else None,
+                          "size_bytes": size if isinstance(size, (int, float)) else None,
+                          "rationale": rationale}
+        audio_id = str(audio_row["format_id"])
     else:
-        if audio.get("acodec") != "opus":
-            reasons.append("audio_251_codec_mismatch")
-        if audio.get("has_drm"):
-            reasons.append("audio_251_drm")
-    return {"available": not reasons, "video_format_id": "398" if video else None,
-            "audio_format_id": "251" if audio else None, "reasons": reasons}
+        audio_id = None
+        audio_evidence = None
+        reasons.append("original_audio_unavailable_or_unverified")
+        if rejected["size_unknown"]:
+            reasons.append("audio_size_unknown")
+    if candidates:
+        sizes = [(video.get("filesize") or video.get("filesize_approx")) if video else None,
+                 audio_row.get("filesize") or audio_row.get("filesize_approx")]
+        if not all(isinstance(size, (int, float)) and size > 0 for size in sizes):
+            reasons.append("selected_format_size_unknown")
+    if candidates and selected_drc:
+        reasons.append("drc_audio_fallback")
+    return {"available": not [reason for reason in reasons if reason != "drc_audio_fallback"],
+            "video_format_id": "398" if video else None, "audio_format_id": audio_id,
+            "audio_codec": audio_codec if candidates else None,
+            "audio_selection": audio_evidence,
+            "video_selection": ({"format_id": "398", "codec": "av1", "width": video.get("width"),
+                                 "height": video.get("height"), "fps": video.get("fps"),
+                                 "drm": video.get("has_drm") if isinstance(video.get("has_drm"), bool) else "unknown"}
+                                if video else None),
+            "rejected_audio_counts": rejected,
+            "reasons": reasons}
+
+
+# Kept as a compatibility alias for callers/tests from the strict-format era.
+assess_required_formats = select_formats
 
 
 def sha256(path):
@@ -97,7 +256,7 @@ def run(args, log, timeout):
     return stdout
 
 
-def verify(path, duration, probe_log):
+def verify(path, duration, probe_log, expected_audio_codec="opus"):
     if not path.is_file() or path.is_symlink() or path.stat().st_size == 0:
         raise ValueError("Missing or empty regular media output")
     data = json.loads(run([FFPROBE, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)], probe_log, 120))
@@ -109,8 +268,10 @@ def verify(path, duration, probe_log):
     if len(streams) != 2 or len(video) != 1 or len(audio) != 1:
         raise ValueError("Expected exactly one video and one audio stream")
     v, a = video[0], audio[0]
-    if v.get("codec_name") != "av1" or v.get("width") != 1280 or v.get("height") != MAX_HEIGHT or a.get("codec_name") != "opus":
-        raise ValueError("Output does not contain required 720p AV1 and Opus")
+    if (v.get("codec_name") != "av1" or v.get("width") != 1280
+            or v.get("height") != MAX_HEIGHT or a.get("codec_name") != expected_audio_codec
+            or expected_audio_codec not in ("opus", "aac")):
+        raise ValueError("Output does not contain required 720p AV1 and selected Opus/AAC audio")
     numerator, denominator = map(int, v.get("avg_frame_rate", "0/1").split("/"))
     if not denominator or abs(numerator / denominator - 30) > 0.1:
         raise ValueError("Video is not approximately 30fps")
@@ -118,7 +279,7 @@ def verify(path, duration, probe_log):
     if not duration or abs(actual - duration) > max(10, duration * 0.001):
         raise ValueError("Media duration differs from expected duration")
     return {"container": "mkv", "duration_seconds": actual, "video_codec": "av1",
-            "audio_codec": "opus", "width": v.get("width"), "height": v["height"], "fps": numerator / denominator}
+            "audio_codec": a["codec_name"], "width": v.get("width"), "height": v["height"], "fps": numerator / denominator}
 
 
 def record_complete(db, manifest, media, receipt):
@@ -220,7 +381,8 @@ def _acquire_locked(db, video_id, root, forward_start=None):
         manifest = json.loads(receipt.read_text())
         if manifest["video_id"] != video_id or sha256(media) != manifest["sha256"] or media.stat().st_size != manifest["size"]:
             raise ValueError("Existing acquisition failed identity/size/checksum verification; refusing replacement")
-        verify(media, manifest["expected_duration"], final / "repeat-ffprobe.stderr.log")
+        verify(media, manifest["expected_duration"], final / "repeat-ffprobe.stderr.log",
+               manifest.get("audio_codec", "opus"))
         record_complete(db, manifest, media, receipt)
         cleanup = cleanup_completed(db, manifest, media, root)
         return {"status": "already_verified", **manifest, "path": str(media), "cleanup": cleanup}
@@ -231,14 +393,14 @@ def _acquire_locked(db, video_id, root, forward_start=None):
     work.mkdir(parents=True)
     with db:
         db.execute("INSERT INTO acquisition_attempts VALUES(?,?,?,NULL,?,?,?)", (
-            attempt, video_id, now(), "running", "Strict 398+251 acquisition", str(work.relative_to(PROJECT))))
+            attempt, video_id, now(), "running", "Strict AV1 398 with selected original Opus/AAC acquisition", str(work.relative_to(PROJECT))))
     common = [YT_DLP, "--ignore-config", "--no-cache-dir", "--no-playlist", "--js-runtimes", "node:" + NODE,
               "--no-write-comments", "--no-write-subs", "--no-write-auto-subs", "--no-write-thumbnail",
               "--no-write-info-json", "--socket-timeout", "30", "--retries", "0", "--fragment-retries", "0",
               "--extractor-retries", "0", "--ffmpeg-location", FFMPEG]
     url = "https://www.youtube.com/watch?v=" + video_id
     try:
-        print(f"{video_id}: checking current metadata and strict formats", flush=True)
+        print(f"{video_id}: checking current metadata and selecting preserved formats", flush=True)
         metadata = json.loads(run(common + ["--skip-download", "--dump-single-json", url], work / "preflight.stderr.log", 180))
         if (metadata.get("id") != video_id or metadata.get("channel_id") != CHANNEL
                 or metadata.get("live_status") not in ("was_live", "not_live") or metadata.get("is_live")):
@@ -247,10 +409,12 @@ def _acquire_locked(db, video_id, root, forward_start=None):
             published, _ = publication(metadata)
             if not published or published < forward_start:
                 raise ValueError("Current source metadata lacks a verified forward-window date")
+        selection = select_formats(metadata)
+        if not selection["available"]:
+            raise ValueError("Required AV1 398 and verified original Opus/AAC audio unavailable: "
+                             + ", ".join(selection["reasons"]))
         formats = {str(f["format_id"]): f for f in metadata.get("formats", []) if f.get("format_id") is not None}
-        video, audio = formats.get("398"), formats.get("251")
-        if not assess_required_formats(metadata)["available"]:
-            raise ValueError("Required 398 AV1 720p30 + 251 Opus formats unavailable")
+        video, audio = formats[selection["video_format_id"]], formats[selection["audio_format_id"]]
         sizes = [f.get("filesize") or f.get("filesize_approx") for f in (video, audio)]
         if not all(isinstance(s, (int, float)) and s > 0 for s in sizes):
             raise ValueError("Cannot establish expected storage requirement")
@@ -259,18 +423,20 @@ def _acquire_locked(db, video_id, root, forward_start=None):
         if free < required:
             raise ValueError(f"Insufficient local storage: need {required} bytes, have {free}")
         (work / "metadata.json").write_text(encoded({k: metadata[k] for k in FIELDS if metadata.get(k) is not None}))
-        print(f"{video_id}: downloading only 398+251; storage budget {required} bytes, free {free}", flush=True)
+        fmt = f"{selection['video_format_id']}+{selection['audio_format_id']}"
+        print(f"{video_id}: downloading only {fmt}; storage budget {required} bytes, free {free}", flush=True)
         output = work / "media.mkv"
-        run(common + ["--verbose", "--newline", "--no-overwrites", "--fixup", "never", "-f", "398+251",
+        run(common + ["--verbose", "--newline", "--no-overwrites", "--fixup", "never", "-f", fmt,
                       "--merge-output-format", "mkv", "-o", str(work / "media.%(ext)s"), url], work / "download.stderr.log", 7200)
         merger_log = (work / "download.stderr.log").read_text()
         if "-c copy" not in merger_log and "-c:v copy" not in merger_log:
             raise ValueError("Missing FFmpeg stream-copy evidence; refusing completion")
-        verified = verify(output, metadata.get("duration"), work / "ffprobe.stderr.log")
+        verified = verify(output, metadata.get("duration"), work / "ffprobe.stderr.log", selection["audio_codec"])
         evidence = final / "attempts" / attempt
         manifest = {"schema_version": 1, "video_id": video_id, "attempt_id": attempt,
                     "completed_at": now(), "expected_duration": metadata["duration"],
-                    "video_format": "398", "audio_format": "251", "transcoded": False,
+                    "video_format": selection["video_format_id"], "audio_format": selection["audio_format_id"],
+                    "audio_selection": selection["audio_selection"], "transcoded": False,
                     "size": output.stat().st_size, "sha256": sha256(output), **verified,
                     "metadata_relative": str((evidence / "metadata.json").relative_to(PROJECT)),
                     "merger_log_relative": str((evidence / "download.stderr.log").relative_to(PROJECT)),

@@ -64,7 +64,7 @@ class FormatInspectionTests(unittest.TestCase):
 
     def test_valid_pair_returns_sanitized_allowlisted_metadata(self):
         result = self.inspect()
-        self.assertTrue(result["strict_398_251"]["available"])
+        self.assertTrue(result["selection"]["available"])
         self.assertEqual(result["format_listing"]["count"], 2)
         self.assertEqual(result["video"]["id"], VIDEO)
         serialized = json.dumps(result)
@@ -73,6 +73,17 @@ class FormatInspectionTests(unittest.TestCase):
         self.assertNotIn("url", serialized)
         self.assertNotIn("http_headers", serialized)
         self.assertEqual(len(self.calls), 1)
+
+    def test_inspection_uses_shared_alternative_audio_selector(self):
+        self.current_metadata["formats"] = [self.current_metadata["formats"][0], {
+            "format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "language": "en",
+            "format_note": "English original", "filesize": 200, "abr": 128,
+            "url": "https://signed.invalid/?token=private"}]
+        result = self.inspect()
+        self.assertEqual(result["selection"]["audio_format_id"], "140")
+        self.assertEqual(result["selection"]["audio_codec"], "aac")
+        self.assertNotIn("signed.invalid", json.dumps(result))
+        self.assertNotIn("private", json.dumps(result))
 
     def test_command_is_single_video_metadata_only_and_has_no_retries(self):
         result = self.inspect(timeout=17)
@@ -93,46 +104,47 @@ class FormatInspectionTests(unittest.TestCase):
     def test_missing_required_video_format(self):
         self.current_metadata = metadata([metadata()["formats"][1]])
         result = self.inspect()
-        self.assertFalse(result["strict_398_251"]["available"])
-        self.assertIn("video_398_missing", result["strict_398_251"]["reasons"])
+        self.assertFalse(result["selection"]["available"])
+        self.assertIn("video_398_missing", result["selection"]["reasons"])
 
     def test_missing_required_audio_format(self):
         self.current_metadata = metadata([metadata()["formats"][0]])
         result = self.inspect()
-        self.assertFalse(result["strict_398_251"]["available"])
-        self.assertIn("audio_251_missing", result["strict_398_251"]["reasons"])
+        self.assertFalse(result["selection"]["available"])
+        self.assertIn("original_audio_unavailable_or_unverified", result["selection"]["reasons"])
 
     def test_codec_and_property_mismatch_are_reported(self):
         rows = self.current_metadata["formats"]
         rows[0].update(vcodec="vp9", height=1080, fps=60)
         rows[1]["acodec"] = "aac"
         result = self.inspect()
-        self.assertEqual(set(result["strict_398_251"]["reasons"]), {
-            "video_398_height_mismatch", "video_398_fps_mismatch", "video_398_codec_mismatch",
-            "audio_251_codec_mismatch"})
+        self.assertIn("video_398_height_mismatch", result["selection"]["reasons"])
+        self.assertIn("video_398_fps_mismatch", result["selection"]["reasons"])
+        self.assertIn("video_398_codec_mismatch", result["selection"]["reasons"])
+        self.assertEqual(result["selection"]["audio_codec"], "aac")
 
     def test_drm_protected_pair_fails(self):
         rows = self.current_metadata["formats"]
         rows[0]["has_drm"] = True
         rows[1]["has_drm"] = True
         result = self.inspect()
-        self.assertFalse(result["strict_398_251"]["available"])
-        self.assertIn("video_398_drm", result["strict_398_251"]["reasons"])
-        self.assertIn("audio_251_drm", result["strict_398_251"]["reasons"])
+        self.assertFalse(result["selection"]["available"])
+        self.assertIn("video_398_drm", result["selection"]["reasons"])
+        self.assertIn("original_audio_unavailable_or_unverified", result["selection"]["reasons"])
 
     def test_empty_format_listing_is_explicit_incomplete(self):
         self.current_metadata = metadata([])
         result = self.inspect()
         self.assertEqual(result["format_listing"]["status"], "empty")
         self.assertEqual(result["exit_code"], 2)
-        self.assertIn("format_list_empty", result["strict_398_251"]["reasons"])
+        self.assertIn("format_list_empty", result["selection"]["reasons"])
 
     def test_missing_format_listing_is_not_reported_as_permanent_absence(self):
         self.current_metadata = metadata()
         self.current_metadata.pop("formats")
         result = self.inspect()
         self.assertEqual(result["format_listing"]["status"], "empty")
-        self.assertFalse(result["strict_398_251"]["available"])
+        self.assertFalse(result["selection"]["available"])
         self.assertEqual(result["exit_code"], 2)
 
     def test_shared_block_prevents_subprocess_launch(self):

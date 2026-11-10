@@ -113,7 +113,7 @@ PY
 
 If other jobs or credentials have changed since backup, disable only the DLS block instead of restoring the old snapshot. Backup checksums and the installed-entry receipt are recorded in ignored `state/cron-activation.json`; it contains no full crontab copy. `state/` (SQLite, acquisitions, manifests, snapshots, staging, logs and validation records), `.test-tmp/`, and local research extracts remain outside Git. The private backup is outside this repository entirely.
 
-Strict 398+251 remains required. Missing AV1 is delayed and reported, never silently substituted. Receipt and coverage problems require operator review. A future launchd migration is outside scope.
+Format policy remains strict for video: exact format 398, AV1 1280×720 at 30 fps, with no DRM indication. Audio candidates must be audio-only Opus/AAC, not explicitly DRM-protected, and have source-language evidence: an explicit original label, a match to the video's language metadata, or the legacy unsuffixed primary format 251 when its language label is absent. Dubbed/translated candidates and conflicting language evidence are rejected. Selection prefers non-DRC; Opus is favored when bitrate evidence is within 15%, otherwise stronger bitrate wins. If bitrate is absent, advertised size and duration provide an estimate; quality, size and stable format ID break ties. DRC is accepted only when every suitable original option is DRC and is recorded as a fallback. Missing selected stream size prevents acquisition. No transcoding or alternative video format is used. If original-track identity is unclear, inspect the sanitized format report and require review.
 
 ### Single-video format diagnostics
 
@@ -134,9 +134,10 @@ gate, and journals confirmed blocking responses. It does not create an
 acquisition attempt, media output, or retry-state entry. Stderr is sanitized
 and bounded in `state/runs/formats/`; raw metadata and signed playback URLs are
 never persisted. JSON output includes only allowlisted video and format
-properties plus the strict 398+251 assessment. The assessment uses the same
-predicate as acquisition; it reports format presence/property mismatches
-without changing the required preservation policy. An empty result is
+properties plus the shared AV1/audio selection assessment. The assessment uses the same
+selector as acquisition and reports the selected IDs, language evidence, codec, DRC,
+quality/size evidence and rationale. It reports format mismatches without changing
+the preservation policy. An empty result is
 reported as incomplete, not as proof that the video permanently lacks formats.
 
 Example sanitized result excerpt:
@@ -148,7 +149,7 @@ Example sanitized result excerpt:
     {"format_id": "398", "vcodec": "av01.0.05M.08", "width": 1280, "height": 720, "fps": 30, "has_drm": false},
     {"format_id": "251", "vcodec": "none", "acodec": "opus", "has_drm": false}
   ],
-  "strict_398_251": {"available": true, "video_format_id": "398", "audio_format_id": "251", "reasons": []}
+  "selection": {"available": true, "video_format_id": "398", "audio_format_id": "251", "audio_codec": "opus", "audio_selection": {"language": "en", "language_evidence": "legacy_primary_audio_format", "drc": false, "rationale": "selected original-language rendition; non-DRC preferred"}, "reasons": []}
 }
 ```
 
@@ -434,7 +435,7 @@ there is no separate caption cron job or scheduler to manage.
 Acquisition remains independent, but now shares network blocking with metadata,
 comments and captions. The guard runs before video CLI inventory initialization
 and before each network subprocess; global deferral does not change selection,
-398+251 formats, manifests or local asset eligibility. Already admitted transfers
+AV1 and selected original-audio formats, manifests or local asset eligibility. Already admitted transfers
 are not destructively interrupted. Expired cooldown requires a separately
 approved coordinated metadata probe, never automatic per-job probes.
 Read `youtube-safety status --json` and the immutable event journal; follow the

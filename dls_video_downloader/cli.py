@@ -132,7 +132,7 @@ def main(argv=None):
     decision.add_argument("decision", choices=["approve", "reject", "skip", "clear"])
     decision.add_argument("--reason", required=True)
     commands.add_parser("reclassify", help="Reevaluate automatic rules without changing decisions")
-    download = commands.add_parser("download", help="Explicit local single-video 398+251 MKV acquisition")
+    download = commands.add_parser("download", help="Explicit local single-video AV1/original-audio MKV acquisition")
     download.add_argument("id")
     download.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
     for name in ("discover", "run"):
@@ -209,9 +209,12 @@ def main(argv=None):
             elif result["mode"] == "plan":
                 print(f"Plan only: one metadata-only format inspection for {args.id}; no network or writes. Use --execute to run.")
             else:
-                pair = result["strict_398_251"]
+                pair = result["selection"]
                 print(f"{result['video'].get('title', args.id)} | {args.id} | formats={result['format_listing']['count']}")
-                print("Strict 398 AV1 720p30 + 251 Opus: " + ("available" if pair["available"] else "not verified"))
+                print("Strict 398 AV1 720p30 + selected original Opus/AAC: " + ("available" if pair["available"] else "not verified"))
+                if pair.get("audio_selection"):
+                    print("Audio: " + str(pair["audio_format_id"]) + " " + pair["audio_selection"]["codec"]
+                          + " | " + pair["audio_selection"]["rationale"])
                 if pair["reasons"]:
                     print("Reasons: " + ", ".join(pair["reasons"]))
                 for row in result["formats"]:

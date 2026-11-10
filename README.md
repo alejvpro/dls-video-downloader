@@ -68,13 +68,13 @@ The ID-based storage layout is intentional; see the [acquisition naming contract
 python3 -B -m dls_video_downloader download MbO7y_90zUI
 ```
 
-Scheduled forward acquisition is authorized from October 26 onward; see RUNNER.md for its limits. The command takes exactly one existing ID and optional `--start-date`; it never enumerates or queues other videos. Effective selection and eligibility must allow acquisition. Manual approval can select a Review/Skip item; manual rejection always blocks it. The current strict profile requires ready official-channel metadata (`was_live` or `not_live`), formats **398 (AV1 720p30) + 251 (Opus)**, and MKV merging. There is no format fallback, transcoding or within-run retry loop. Cron invokes the bounded runner on the schedule documented in RUNNER.md. General format selection and uploaded-program readiness remain later work. The resolution ceiling remains 720p.
+Scheduled forward acquisition is authorized from October 26 onward; see RUNNER.md for its limits. The command takes exactly one existing ID and optional `--start-date`; it never enumerates or queues other videos. Effective selection and eligibility must allow acquisition. Manual approval can select a Review/Skip item; manual rejection always blocks it. The video requirement remains format **398 (AV1 1280×720, 30 fps, non-DRM)**. Audio is selected from confidently identified original-language Opus or AAC tracks, preferring non-DRC and then Opus when quality evidence is comparable. The established unsuffixed 251 primary rendition remains accepted if yt-dlp omits its language label. Otherwise ambiguous source language, translated/dubbed tracks, DRM, or missing size evidence stop preflight for review. Output remains MKV with stream copying; there is no transcoding or within-run retry loop. The resolution ceiling remains 720p.
 
 Executables are explicit: `/usr/local/bin/yt-dlp-new`, the versioned Node path documented above, and existing `/opt/homebrew/bin/ffmpeg` / `ffprobe`. Ambient yt-dlp configuration is ignored. Preflight metadata stays in memory except for sanitized allowlisted metadata; expiring playback URLs are omitted from retained diagnostics and manifests. Format sizes must be available; free-space budget is three times combined advertised stream size plus 1 GiB for download/merge headroom. This estimate cannot prevent unrelated processes consuming space later.
 
 Outputs stay inside this project at `state/acquisitions/<video-id>/media.mkv` and `acquisition.json`. Unique in-progress attempts live under `state/acquisitions/.work/<video-id>/<attempt-id>/`. New verified attempts move their small metadata/log evidence to `<video-id>/attempts/<attempt-id>/` before publishing the manifest. The manifest associates this evidence, selected formats, stream details, expected/actual duration, file size, and SHA-256 with the permanent video ID. Publication uses an atomic no-replace hard link, temporarily creating two names for one inode rather than copying the media.
 
-Completion requires a nonempty MKV file, exactly one 720p30 AV1 video stream and one Opus audio stream, duration within the larger of 10 seconds or 0.1%, merger stream-copy evidence, and SHA-256. A subsequent invocation verifies the existing hash, size, and streams before returning `already_verified`; it performs no YouTube request or download. Existing damaged/inconsistent final files are never replaced automatically. Interrupted attempts keep isolated partial output and cannot establish completion. SIGKILL/power loss may leave an attempt marked running; incomplete publication requires explicit recovery review. A completed manifest can reconcile a missing database receipt after re-verification.
+Completion requires a nonempty MKV file, exactly one 720p30 AV1 video stream and one selected Opus or AAC audio stream, duration within the larger of 10 seconds or 0.1%, merger stream-copy evidence, and SHA-256. New manifests record selected audio format, codec, language evidence, DRC status, quality/size evidence, and rationale. Existing manifests without these optional fields remain valid; their recorded codec is used for repeat verification. A subsequent invocation verifies the existing hash, size, and streams before returning `already_verified`; it performs no YouTube request or download. Existing damaged/inconsistent final files are never replaced automatically. Interrupted attempts keep isolated partial output and cannot establish completion. SIGKILL/power loss may leave an attempt marked running; incomplete publication requires explicit recovery review. A completed manifest can reconcile a missing database receipt after re-verification.
 
 A local advisory lock prevents concurrent acquisitions using the same output root. After successful verification and database recording, cleanup under this lock unlinks only an attempt's extra `media.mkv` name when it demonstrably shares the final media inode, then removes only empty staging directories. It never removes final media or recursively sweeps failed, interrupted, or unrelated attempts. Cleanup failure is reported as deferred and does not relabel a completed acquisition. A repeat invocation can retry cleanup after reverification. Legacy October 26 metadata/logs remain at their original `.work` paths because its unchanged manifest references them; only its extra media hard link is removed.
 
@@ -162,11 +162,11 @@ does not wait for complete historical coverage.
   historical coverage. Historical completeness is a continuing improvement, not a
   prerequisite for a useful website.
 
-The current media policy remains strict: acquisition requires yt-dlp formats 398
-(AV1, 1280×720, 30 fps) and 251 (Opus), with stream-copy verification and no silent
-fallback. The November 6 Club inspection found 398 but not exact 251 in the returned
-listing, although other Opus variants were offered. Reviewing quality-oriented audio
-selection is the next policy investigation; no fallback has been authorized.
+The current media policy remains strict: acquisition requires yt-dlp format 398
+(AV1, 1280×720, 30 fps) with stream-copy verification. The November 6 Club inspection
+found 398 but not exact 251; audio selection now permits verified original Opus or AAC
+without silently selecting translations or dubbed tracks. The metadata diagnostic
+and acquisition use the same selector.
 
 `/usr/local/bin/yt-dlp-new` and the explicit Node 22/FFmpeg/ffprobe paths remain the
 configured tools. Do not change dependencies or sibling projects as part of this

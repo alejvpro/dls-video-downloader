@@ -233,7 +233,7 @@ Python 3.10+ CLI, using the standard library, with SQLite schema version 3 at `s
 - `classification.py` produces **Download / Skip / Review** selection. Internal Download types are daily show and The Club. Persistent ID-based approvals/rejections/skips take precedence; clearing a decision restores automatic selection while retaining history. Four seeded decisions remain intact.
 - `discovery.py` scans bounded recent results from the official channel's Live/streams and Videos tabs. Defaults: 25 Live, 75 Videos, eight full enrichments, two acquisition attempts per run. Daily shows and The Club receive enrichment priority; coverage gaps are reported.
 - Automatic acquisition requires selected content, verified official-channel identity, a verified date on or after **October 26, 2026**, and completed/ready media. Unknown-date, pre-window, Skip and unresolved Review items are excluded. Historical manual approvals remain preserved but cannot bypass the scheduled forward window; explicit manual acquisition can handle approved exceptions.
-- `acquisition.py` requires format **398 (1280×720 AV1, 30 fps) + 251 (Opus)**, merges to MKV with FFmpeg stream copying, and refuses silent fallback or transcoding. ffprobe verification, duration checks, file size and SHA-256 precede completion. Manifests and SQLite receipts identify verified results; duplicates are protected.
+- `acquisition.py` requires exact format **398 (1280×720 AV1, 30 fps)** and uses the shared deterministic selector for confidently identified original Opus/AAC audio. Non-DRC is preferred, Opus is favored when quality evidence is comparable, and DRC is permitted only as a recorded fallback. Ambiguous language or translated/dubbed tracks fail preflight. Output remains MKV with FFmpeg stream copying and no transcoding. ffprobe verification, duration checks, file size and SHA-256 precede completion. New manifests preserve selected-audio provenance; older manifests remain valid.
 - `operations.py` maintains persistent retry delays, bounded logs and safe staging retention. Default retries begin at one hour for transient failures, six hours for format/storage failures, and 24 hours for unavailable/verification failures, with exponential delay capped at 24 hours. Failures consume bounded attempt slots; other items can proceed.
 - A shared process lock prevents overlapping discovery/acquisition/cleanup. Subprocess timeouts and inherited lock ownership protect interrupted operations. Retries currently start fresh, not from partial files. Cleanup requires established ownership/age, protects verified media and referenced evidence, and defaults to 72-hour stale retention with bounded removals. Inspect `cleanup` without `--execute` first.
 
@@ -274,11 +274,11 @@ also recorded in the README roadmap.
    been validated. The six YouTube acquisition/supplemental cron entries are
    currently paused; the independent Pushover dispatcher remains active every 15
    minutes. Before restoring any YouTube job, complete the separate schedule,
-   runtime, and request-budget audit and resolve the strict audio-format question
-   raised by the November 6 Club (`kEMi9MO8dSI`). Its current listing had AV1 398 but
-   not exact Opus 251, while other Opus variants were present. No fallback policy is
-   authorized yet. After a policy decision, use supervised bounded validation and
-   inspect actual scheduled-run results before claiming unattended reliability.
+   runtime, and request-budget audit. The format policy now keeps strict AV1 398 video
+   while selecting verified original Opus/AAC audio through one shared selector. The
+   November 6 Club (`kEMi9MO8dSI`) still needs a supervised targeted acquisition using
+   this new policy. Inspect its selected audio and actual scheduled-run results before
+   claiming unattended reliability.
 2. **Begin conservative recent-history collection once forward capture is stable.**
    The tentative starting boundary is June 1, 2026, not yet finalized. Historical
    Format Research must document the era's publication patterns and confirm the

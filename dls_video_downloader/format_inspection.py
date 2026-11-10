@@ -13,7 +13,7 @@ MAX_FORMATS = 500
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 FORMAT_FIELDS = ("format_id", "ext", "format_note", "vcodec", "acodec", "width", "height",
                  "fps", "has_drm", "filesize", "filesize_approx", "availability",
-                 "protocol", "language", "quality")
+                 "protocol", "language", "quality", "abr", "language_preference", "audio_track")
 
 
 def command(video_id):
@@ -29,7 +29,8 @@ def command(video_id):
 
 
 def _safe_format(row):
-    result = {key: row[key] for key in FORMAT_FIELDS if key in row}
+    result = {key: row[key] for key in FORMAT_FIELDS if key in row
+              and (row[key] is None or isinstance(row[key], (str, int, float, bool)))}
     result["has_drm"] = row.get("has_drm")
     return result
 
@@ -46,7 +47,7 @@ def _result(video_id, metadata):
         raise ValueError("yt-dlp format metadata was malformed")
     valid_rows = [row for row in rows if isinstance(row, dict)]
     safe_rows = [_safe_format(row) for row in valid_rows[:MAX_FORMATS]]
-    assessment = acquisition.assess_required_formats(metadata)
+    assessment = acquisition.select_formats(metadata)
     if not valid_rows:
         assessment["available"] = False
         assessment["reasons"].append("format_list_empty")
@@ -60,7 +61,7 @@ def _result(video_id, metadata):
                            "count": len(valid_rows), "returned": len(safe_rows),
                            "truncated": len(valid_rows) > MAX_FORMATS},
         "formats": safe_rows,
-        "strict_398_251": assessment,
+        "selection": assessment,
         "exit_code": 0 if valid_rows else 2,
     }
 
