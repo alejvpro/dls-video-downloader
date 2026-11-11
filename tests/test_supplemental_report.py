@@ -1,6 +1,6 @@
 """Offline effectiveness reporting over disposable evidence only."""
 from contextlib import redirect_stdout
-from datetime import datetime,timezone
+from datetime import date,datetime,timezone
 import hashlib
 import io
 import json
@@ -15,7 +15,7 @@ from dls_video_downloader.cli import main
 from dls_video_downloader.comments import CommentStore,IRISHWEEGEE
 from dls_video_downloader.inventory import connect,import_document
 from dls_video_downloader.classification import CHANNEL
-from dls_video_downloader.supplemental_report import build
+from dls_video_downloader.supplemental_report import build, _discovery_receipts
 from dls_video_downloader.morning_discovery import _save_receipt
 
 
@@ -109,6 +109,20 @@ class SupplementalReportTests(unittest.TestCase):
         self.assertEqual(len(receipts),120)
         self.assertTrue(all(json.loads(p.read_text())['trigger']=='scheduled' for p in receipts))
         self.assertTrue((self.root/'morning/last-run.json').exists())
+
+    def test_legacy_streams_receipt_is_corrected_in_read_only_report(self):
+        directory=self.root/'morning';(directory/'history').mkdir(parents=True)
+        path=directory/'history'/'legacy.json'
+        original={'run_id':'legacy','started_at':'2026-11-10T17:25:00+00:00','limits':{'streams':25,'videos':10},
+            'encountered':{'live':25},'operation_attempts':[{'kind':'channel_listing','scope':'streams'}],
+            'warnings':['live: bounded head reached 25; not exhaustive discovery'],
+            'forward_coverage':{'complete':True}}
+        path.write_text(json.dumps(original))
+        row=_discovery_receipts(directory,'2026-11-10','2026-11-10')[0]
+        self.assertEqual(row['tab_coverage']['streams']['entries_observed'],25)
+        self.assertTrue(row['tab_coverage']['streams']['cap_hit'])
+        self.assertFalse(row['coverage']['complete'])
+        self.assertEqual(json.loads(path.read_text()),original)
 
 
 if __name__=='__main__':unittest.main()

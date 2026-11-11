@@ -36,10 +36,10 @@ def _busy(exc):
 
 @safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'supplemental-cycle')
 def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
-        runtime_seconds=600, discovery_seconds=180, comment_seconds=600,
-        streams_limit=10, videos_limit=0, max_metadata_requests=20, max_videos=2,
+        runtime_seconds=1500, discovery_seconds=180, comment_seconds=900,
+        streams_limit=10, videos_limit=0, max_metadata_requests=20, max_videos=10,
         max_comments=1000, start=DEFAULT_START, clock=None, monotonic=None,
-        captions=False, caption_root=None, caption_seconds=180, max_caption_videos=1,
+        captions=False, caption_root=None, caption_seconds=600, max_caption_videos=10,
         invocation_source='manual'):
     """No execution without explicit intent. All external work is delegated.
 
@@ -50,9 +50,9 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, discover=False,
         raise ValueError('--captions requires --execute; planning never retrieves captions')
     if discover and not execute:
         raise ValueError('--discover requires --execute; default planning never contacts YouTube')
-    bounds = ((runtime_seconds,30,600),(discovery_seconds,30,180),(comment_seconds,30,600),
+    bounds = ((runtime_seconds,30,1500),(discovery_seconds,30,180),(comment_seconds,30,900),
               (streams_limit,1,25),(videos_limit,0,25),(max_metadata_requests,1,100),
-              (max_videos,1,10),(max_comments,1,1000),(caption_seconds,30,300),(max_caption_videos,1,2))
+              (max_videos,1,10),(max_comments,1,1000),(caption_seconds,30,900),(max_caption_videos,1,10))
     if any(type(v) is not int or not lo <= v <= hi for v,lo,hi in bounds):
         raise ValueError('Invalid cycle limits; see cycle --help')
     start = date.fromisoformat(start).isoformat()

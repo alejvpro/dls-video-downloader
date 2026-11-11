@@ -121,10 +121,11 @@ does not wait for complete historical coverage.
    evidence. Keep shared YouTube safety, incident preservation, and Pushover alerts
    active. Audit the first scheduled results before treating unattended capture as
    reliable.
-2. **Start slow historical collection after forward capture is stable.** Historical
-   Format Research must establish publishing patterns and the precise boundary before
-   the tentative June 1, 2026 scope is finalized. Work at a deliberately conservative
-   rate; make progress resumable, interruptible, and subject to shared YouTube safety.
+2. **Start slow historical collection after forward capture is stable.** The agreed
+   historical boundary is June 1, 2026 inclusive; collection remains parked until
+   Historical Format Research documents publishing patterns and the practical
+   playlist/reconciliation coverage. Work at a deliberately conservative rate; make
+   progress resumable, interruptible, and subject to shared YouTube safety.
    Prefer existing inventory evidence or an approved official metadata source for
    dates where that avoids duplicate yt-dlp metadata extraction. Do not let history
    consume forward-capture priority or turn backfill into a second safety system.

@@ -212,7 +212,6 @@ class CollectorTests(unittest.TestCase):
         with patch.object(cc, "run_extractor", return_value=execution([source()])), \
                 patch("dls_video_downloader.cli.connect", side_effect=AssertionError("Video inventory opened")), \
                 patch("dls_video_downloader.cli.reclassify", side_effect=AssertionError("Classification invoked")), \
-                patch("dls_video_downloader.acquisition.operation_lock", side_effect=AssertionError("Media lock used")), \
                 redirect_stdout(output):
             code = main(["--db", str(self.root / "must-not-exist.sqlite3"), "comments", "collect", VIDEO,
                          "--store-root", str(self.root)])

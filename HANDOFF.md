@@ -1,6 +1,66 @@
 # DLS video downloader handoff
 
-## Forward observability and restoration notes (proposed; not activated)
+## Forward operational readiness correction (offline; not activated)
+
+At the November 10 readiness milestone, the working tree contains offline-only
+corrections for the Streams coverage report, current-vs-historical metadata
+deferrals, cross-workflow exclusion and bounded forward gap recovery. All six
+YouTube collection cron entries remain paused; the independent 15-minute
+Pushover dispatcher remains active. No cron/state/asset changes or live requests
+were authorized.
+
+Streams receipts now map internal `live` observations to the Streams report,
+including listing attempt, observed count, cap and coverage. Old receipts are
+interpreted read-only from their existing observations/attempt fields. `status`
+keeps prior deferral evidence but reports only unresolved IDs as currently
+budget-deferred, with resolved/acquired history separate.
+
+Acquisition, discovery, format inspection, direct download, comments and captions
+use the existing nonblocking acquisition operation lock at each network boundary.
+Caption/comment child processes inherit the lock descriptor. Busy operations
+defer without waiting/network work. Lock order and current test coverage are in
+RUNNER.md. Pushover dispatch and read-only planning are independent.
+
+Regular discovery keeps shallow defaults. When a tab's prior frontier falls out
+of its head, it processes one bounded 200-entry page and stores a per-tab cursor
+in ignored `state/discovery-recovery.json`. It advances the page cursor only after
+pending first-enrichment work has been durably recorded; a crash before that
+replays the page. It advances the scan frontier only after reconciliation. A
+frontier still absent at a short terminal page is held for manual review. This is
+forward-gap recovery between an existing frontier and the current head, not
+historical enumeration. New observations remain subject to October 26, 2026
+authorization, full source-date checks for acquisition, existing manual choices,
+retry state and shared safety.
+
+Proposed (not installed) normal schedule and capacities are documented with
+exact commands in RUNNER.md: 9:25 AM morning discovery, 10:30 AM and 7:30 PM
+supplemental windows, four one-download acquisition opportunities at 11 AM,
+2 PM, 6 PM and 9 PM. Forward supplemental ceilings are ten comment and ten
+caption videos per invocation, 900 comment seconds, 600 caption seconds, and a
+1,500-second total; captions remain opt-in to explicitly configured cycles.
+These are bounded operational capacities, not YouTube-published limits.
+
+This readiness section is the current operational summary. Subsequent dated
+checkpoint sections are chronological records; their then-current counts, pending
+items, and proposed schedules are not current status unless repeated above.
+
+Next: review this offline diff and guarded tests, create a separate Git checkpoint
+under explicit authorization, then perform a staged supervised schedule
+restoration. Audit each first scheduled report and leave historical backfill
+parked until several weeks of forward evidence and Historical Format Research.
+
+Historical work stays parked with its agreed future constraints: June 1, 2026
+inclusive is the established boundary; use bounded playlist-first discovery and
+selective reconciliation, then review Daily Shows, Clubs and required standalone
+components such as June 1 Postgame. Start near one media acquisition/day. Historical
+items receive one usable comment collection and one complete original-caption
+collection, with retries only for failed/incomplete required assets and no routine
+freshness confirmations. Forward work and shared safety always take priority.
+Archiver/Indexer must find new or revised assets by stable video and asset/revision
+identity, including gaps inside date ranges; publication-date high-water marks
+must never hide those updates.
+
+## Prior forward observability audit notes (superseded by current readiness correction above)
 
 The read-only `supplemental-report` and explicit invocation provenance support a
 two-to-four-week forward effectiveness review. Proposed windows are 9:25 AM
@@ -296,7 +356,7 @@ Inspect detailed run records under `state/runs/` and fatal diagnostics there or 
 
 The downloader acquires media and preserves source observations without interpreting their content. Future `dls-indexer` work will interpret timestamp comments, identify chapters and connect video/audio episodes. `dls-archiver` owns long-term organization, integrity, backups and eventual descriptive archive names. Neither integration is implemented. Sibling repositories remain independent; do not modify them for downloader work.
 
-## Roadmap and cross-project dependencies — November 9 update
+## Roadmap and cross-project dependencies — November 9 snapshot
 
 The strategic objective is a reliable, continuously growing, searchable archive.
 Website launch should use available verified coverage and must not wait for all
@@ -310,14 +370,15 @@ also recorded in the README roadmap.
    currently paused; the independent Pushover dispatcher remains active every 15
    minutes. Before restoring any YouTube job, complete the separate schedule,
    runtime, and request-budget audit. The format policy now keeps strict AV1 398 video
-   while selecting verified original Opus/AAC audio through one shared selector. The
-   November 6 Club (`kEMi9MO8dSI`) still needs a supervised targeted acquisition using
-   this new policy. Inspect its selected audio and actual scheduled-run results before
-   claiming unattended reliability.
+   while selecting verified original Opus/AAC audio through one shared selector. At
+   this snapshot, the November 6 Club (`kEMi9MO8dSI`) still needed acquisition; it was
+   subsequently acquired and verified. The six collection jobs remain paused pending
+   the operational-readiness checkpoint and supervised restoration.
 2. **Begin conservative recent-history collection once forward capture is stable.**
-   The tentative starting boundary is June 1, 2026, not yet finalized. Historical
-   Format Research must document the era's publication patterns and confirm the
-   exact boundary. Keep the work low-rate, resumable, interruptible, and behind
+   At this November 9 snapshot, June 1, 2026 was tentative. The later agreed boundary
+   is June 1 inclusive; Historical Format Research still must document the era's
+   publication patterns and playlist/reconciliation coverage before collection
+   starts. Keep the work low-rate, resumable, interruptible, and behind
    forward capture. Reuse retained inventory/source evidence or an approved official
    date source where it avoids duplicate metadata requests. Every request must use
    the shared YouTube safety mechanism; no separate cooldown, queue database, or

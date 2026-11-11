@@ -21,10 +21,10 @@ def cooldown(inventory_path, root):
 
 
 @safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'caption-runner')
-def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=1, runtime_seconds=180,
+def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=10, runtime_seconds=900,
         start=DEFAULT_START, clock=None, monotonic=None, deadline=None, invocation_source='manual'):
-    if type(max_videos) is not int or not 1<=max_videos<=2:raise ValueError('Caption max videos must be 1..2')
-    if type(runtime_seconds) is not int or not 30<=runtime_seconds<=300:raise ValueError('Caption runtime must be 30..300')
+    if type(max_videos) is not int or not 1<=max_videos<=10:raise ValueError('Caption max videos must be 1..10')
+    if type(runtime_seconds) is not int or not 30<=runtime_seconds<=900:raise ValueError('Caption runtime must be 30..900')
     clock=clock or (lambda:datetime.now(timezone.utc));monotonic=monotonic or time.monotonic
     end=min(monotonic()+runtime_seconds,deadline if deadline is not None else math.inf)
     root=Path(root).resolve();inventory_path=Path(inventory_path).resolve()
@@ -60,13 +60,15 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=1, runti
                         return max(0,math.floor(end-monotonic()))
                     collected=caption_collection.collect(video,root=root,timeout=min(300,budget),purpose=item['refresh']['purpose'],
                         completion_evidence=item['completion_evidence'],before_collect=remaining_preflight,clock=clock,monotonic=monotonic,
-                        invocation_source=invocation_source)
-                    work.update(status='failed' if collected['exit_code'] else 'completed',outcome=collected['outcome'],
+                        invocation_source=invocation_source,operation_root=inventory_path.parent/'acquisitions')
+                    work.update(status='deferred' if collected.get('busy_deferred') else 'failed' if collected['exit_code'] else 'completed',outcome=collected['outcome'],
                         attempt_id=collected['attempt_id'],collection_record=collected['collection_record'],
                         complete=collected['complete'],started_at=collected['started_at'],finished_at=collected['finished_at'])
                     if collected.get('blocking'):
                         comment_runner.atomic_json(directory/'cooldown.json',collected['blocking'])
                         result.update(stop_reason='collector_cooldown',exit_code=2);break
+                    if collected.get('busy_deferred'):
+                        result.update(stop_reason='video_acquisition_or_discovery_active',exit_code=75);break
                     if collected['exit_code']:result['exit_code']=collected['exit_code']
                     if collected['exit_code']==130:result['stop_reason']='interrupted';break
                 except safety.Blocked as exc:

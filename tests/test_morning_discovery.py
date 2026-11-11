@@ -47,7 +47,9 @@ class MorningTests(unittest.TestCase):
         self.calls.append((args,log,timeout))
         if '--flat-playlist' in args:
             entries=self.live if args[-1].endswith('/streams') else self.videos
-            return json.dumps(dict(channel_id=CHANNEL,epoch=self.now.timestamp(),entries=entries))
+            limit=int(args[args.index('--playlist-end')+1])
+            start=int(args[args.index('--playlist-start')+1]) if '--playlist-start' in args else 1
+            return json.dumps(dict(channel_id=CHANNEL,epoch=self.now.timestamp(),entries=entries[start-1:limit]))
         return json.dumps(dict(epoch=self.now.timestamp(),**self.full[args[-1].split('=')[-1]]))
 
     def invoke(self,**kwargs):
@@ -226,6 +228,22 @@ class MorningTests(unittest.TestCase):
         self.assertFalse(out['forward_coverage']['complete']);self.assertEqual(out['exit_code'],2)
         self.assertTrue(all(c[2]<=60 for c in self.calls))
         self.assertEqual(self.calls[0][0][self.calls[0][0].index('--playlist-end')+1],'10')
+
+    def test_streams_receipt_alias_counts_cap_and_disabled_tab(self):
+        out=self.invoke(streams_limit=1,videos_limit=0)
+        self.assertEqual(out['tab_coverage']['streams']['entries_observed'],1)
+        self.assertTrue(out['tab_coverage']['streams']['listing_attempted'])
+        self.assertTrue(out['tab_coverage']['streams']['cap_hit'])
+        self.assertFalse(out['tab_coverage']['streams']['complete'])
+        self.assertEqual(out['tab_coverage']['videos']['status'],'not_requested')
+        self.assertFalse(out['forward_coverage']['complete'])
+
+    def test_failed_stream_listing_is_not_reported_as_empty_success(self):
+        self.fake=lambda *a: (_ for _ in ()).throw(ValueError('listing failed'))
+        out=self.invoke(streams_limit=1,videos_limit=0)
+        self.assertEqual(out['tab_coverage']['streams']['status'],'failed')
+        self.assertEqual(out['tab_coverage']['streams']['entries_observed'],0)
+        self.assertFalse(out['tab_coverage']['streams']['complete'])
 
     def test_oversized_or_foreign_tab_fails_without_import(self):
         for document in ({'channel_id':CHANNEL,'entries':self.live*11},

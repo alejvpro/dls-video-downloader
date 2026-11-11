@@ -13,6 +13,7 @@ from unittest.mock import patch
 from dls_video_downloader import captions as assets, caption_collection as collect
 from dls_video_downloader import caption_planning as planning, caption_runner as runner
 from dls_video_downloader import supplemental_cycle as cycle, comment_collection as network
+from dls_video_downloader import acquisition as media
 from dls_video_downloader.youtube_safety import Blocked
 from dls_video_downloader.classification import CHANNEL
 from dls_video_downloader.cli import main
@@ -62,6 +63,7 @@ class CaptionTests(unittest.TestCase):
 
     def test_initial_both_formats_exact_and_portable(self):
         r=self.collect();self.assertTrue(r['complete']);self.assertEqual(r['tool']['version'],'stable@2026.10.26')
+        self.assertIsNotNone(self.mock_listing.call_args.args[3])
         for row,raw in zip(r['formats'],(JSON3,VTT)):
             p=self.root/row['path'];self.assertEqual(p.read_bytes(),raw);self.assertEqual(row['sha256'],hashlib.sha256(raw).hexdigest())
         portable=json.loads((self.root/r['collection_record']).read_bytes());self.assertEqual(portable['attempt_id'],r['attempt_id'])
@@ -212,7 +214,7 @@ class CaptionTests(unittest.TestCase):
         self.http.stop()
         with patch.object(network,'run_extractor') as run:
             collect.fetch('https://www.youtube.com/api/timedtext',12,5)
-            args=run.call_args.args;self.assertEqual(args[1:],(12,5));self.assertIn('Accept-Encoding',args[0][3]);self.assertIn('16777216',args[0][3])
+        args=run.call_args.args;self.assertEqual(args[1:],(12,5,None));self.assertIn('Accept-Encoding',args[0][3]);self.assertIn('16777216',args[0][3])
 
     def test_missing_schedule_exact_thresholds(self):
         self.mock_listing.return_value=execution(dict(id=VIDEO,live_status='was_live',subtitles={},automatic_captions={}))
@@ -336,6 +338,32 @@ class CaptionTests(unittest.TestCase):
             with self.assertRaises(network.CommentBusy):self.collect()
         self.mock_listing.assert_not_called()
 
+    def test_direct_caption_collection_respects_shared_operation_lock(self):
+        self.seed()
+        with media.operation_lock(self.base/'acquisitions'):
+            with self.assertRaisesRegex(network.CommentBusy,'acquisition or discovery'):
+                self.collect()
+        self.mock_listing.assert_not_called()
+
+    def test_payload_lock_contention_preserves_partial_bytes_without_failure_retry(self):
+        from contextlib import contextmanager
+        self.seed();calls=0
+        @contextmanager
+        def contend_on_second_payload(root):
+            nonlocal calls
+            calls+=1
+            if calls==3:raise media.OperationBusy('active acquisition')
+            yield 123
+        self.mock_fetch.side_effect=[execution(JSON3)]
+        with patch.object(collect.media,'operation_lock',side_effect=contend_on_second_payload):
+            result=self.collect()
+        self.assertTrue(result['busy_deferred']);self.assertEqual(result['exit_code'],75)
+        self.assertFalse(result['technical_failure']);self.assertEqual(result['outcome'],'partial')
+        self.assertEqual(self.mock_fetch.call_count,1)
+        self.assertTrue(any(row.get('sha256') for row in result['formats']))
+        self.assertEqual(self.history()[-1]['technical_failure'],False)
+        self.assertTrue(planning.plan(self.path,self.root,now=self.now)['items'][0]['due'])
+
     def test_runner_rate_limit_persists_cooldown(self):
         self.seed();self.mock_fetch.side_effect=lambda *a:execution(error='HTTP Error 429')
         r=runner.run(self.path,self.root,execute=True,clock=lambda:AT);self.assertEqual(r['stop_reason'],'collector_cooldown')
@@ -370,10 +398,23 @@ class CaptionTests(unittest.TestCase):
 
     def test_cycle_overall_budget_deferred(self):
         self.seed()
-        def comments(*a,**kw):self.elapsed=590;return dict(work=[],stop_reason=None,exit_code=0)
+        def comments(*a,**kw):self.elapsed=1490;return dict(work=[],stop_reason=None,exit_code=0)
         with patch.object(cycle.comment_runner,'run',side_effect=comments):
             r=cycle.run(self.path,self.base/'comments',execute=True,captions=True,clock=lambda:AT,monotonic=lambda:self.elapsed)
         self.assertEqual(r['phases']['captions']['reason'],'insufficient_remaining_runtime');self.mock_fetch.assert_not_called()
+
+    def test_cycle_forward_capacity_accepts_ten_items_and_longer_bounded_phases(self):
+        self.seed()
+        with patch.object(cycle.comment_runner,'run',return_value=dict(work=[],stop_reason=None,exit_code=0)) as comments, \
+             patch.object(cycle.caption_runner,'run',return_value=dict(work=[],stop_reason=None,exit_code=0)) as captions:
+            result=cycle.run(self.path,self.base/'comments',execute=True,captions=True,
+                max_videos=10,max_caption_videos=10,runtime_seconds=1500,
+                comment_seconds=900,caption_seconds=600,clock=lambda:AT)
+        self.assertEqual(result['limits']['max_videos'],10)
+        self.assertEqual(result['limits']['max_caption_videos'],10)
+        self.assertEqual(result['limits']['runtime_seconds'],1500)
+        self.assertEqual(comments.call_args.kwargs['max_videos'],10)
+        self.assertEqual(captions.call_args.kwargs['max_videos'],10)
 
     def test_cycle_caption_success_does_not_hide_comment_failure(self):
         self.seed()

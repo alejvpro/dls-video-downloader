@@ -77,6 +77,8 @@ class CycleTests(unittest.TestCase):
     def test_default_readonly_no_network_no_stores_no_logs(self):
         self.seed();before=self.files();out=self.invoke()
         self.assertEqual(out['mode'],'plan');self.assertFalse(out['fresh_youtube_status'])
+        self.assertEqual(out['limits']['max_videos'],10);self.assertEqual(out['limits']['max_caption_videos'],10)
+        self.assertEqual(out['limits']['comment_seconds'],900);self.assertEqual(out['limits']['caption_seconds'],600)
         self.assertEqual(out['phases']['comments']['selected_ids'],[VIDEO])
         self.assertEqual(self.metadata,[]);self.assertEqual(self.collections,[])
         self.assertEqual(before,self.files());self.assertFalse((self.base/'supplemental').exists())

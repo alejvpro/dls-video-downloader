@@ -12,6 +12,8 @@ import subprocess
 import time
 
 from . import youtube_safety as safety
+from . import acquisition as media
+from .operations import OperationBusy
 from .comments import CommentStore, VIDEO_ID, timestamp
 
 
@@ -62,16 +64,18 @@ class Execution:
     diagnostics_truncated: bool = False
 
 
-def run_extractor(argv, timeout, lock_fd):
+def run_extractor(argv, timeout, lock_fd, operation_fd=None):
     """Drain bounded pipes without writing the video payload or allowing deadlock."""
     gate=safety.current()
     request=gate.begin('extractor') if safety.is_network(argv) else None
     output = bytearray()
     diagnostics = bytearray()
     result = Execution()
+    supplied = lock_fd if isinstance(lock_fd, (tuple, list)) else (lock_fd,)
+    inherited = tuple(dict.fromkeys(fd for fd in (*supplied, operation_fd) if fd is not None))
     process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True,
-                               pass_fds=(lock_fd,))
+                               pass_fds=inherited)
     deadline = time.monotonic() + timeout
     try:
         with selectors.DefaultSelector() as selector:
@@ -208,7 +212,7 @@ def assess(video_id, execution):
 
 @safety.scoped(lambda a:Path(a['root']).resolve().parent,'comments')
 def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, before_collect=None,
-            invocation_source='manual', purpose='manual'):
+            invocation_source='manual', purpose='manual', operation_root=None):
     # Optional runner preflight is invoked under the collector lock, after store
     # initialization and before extraction. Raising prevents network work; returning
     # an integer supplies the remaining invocation/publication timeout budget.
@@ -221,6 +225,7 @@ def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, befo
     if invocation_source not in ('scheduled','manual','other','unknown') or purpose not in ('initial','confirmation','refresh','retry','manual','other','unknown'):
         raise ValueError('Invalid collection provenance')
     root = Path(root).resolve()
+    operation_root=Path(operation_root).resolve() if operation_root is not None else root.parent/'acquisitions'
     if root == PROJECT / "state" or root.is_relative_to(PROJECT / "state/acquisitions"):
         raise ValueError("Comment store must be separate from video operational data")
     safety.current().ensure('comment_collection')
@@ -233,18 +238,27 @@ def collect(video_id, *, root=DEFAULT_ROOT, max_comments=1000, timeout=600, befo
                 timeout = min(timeout, remaining_timeout)
             started_at = timestamp()
             argv = command(video_id, max_comments)
+            comments = outcome = coverage = tool = warnings = error = None
             try:
-                execution = run_extractor(argv, timeout, lock_fd)
+                try:
+                    with media.operation_lock(operation_root) as operation_fd:
+                        # Keep the established three-argument collector seam while
+                        # carrying both lock descriptors to the actual subprocess.
+                        execution = run_extractor(argv, timeout, (lock_fd, operation_fd))
+                        comments, outcome, coverage, tool, warnings, error = assess(video_id, execution)
+                        blocking_text=coverage.get('diagnostics','')+'\n'+str(error or '')
+                        if safety.classify(blocking_text) and safety.current().status()['network_allowed']:
+                            safety.current().observe(blocking_text,component='comments',operation='collection')
+                except OperationBusy as exc:
+                    raise CommentBusy('A video acquisition or discovery operation is active') from exc
             except safety.Blocked:
                 raise
             except OSError as exc:
                 execution = Execution(stderr=safe_diagnostic(exc).encode(), termination="launch_failed")
             except KeyboardInterrupt:
                 execution = Execution(termination="interrupted")
-            comments, outcome, coverage, tool, warnings, error = assess(video_id, execution)
-            blocking_text=coverage.get('diagnostics','')+'\n'+str(error or '')
-            if safety.classify(blocking_text) and safety.current().status()['network_allowed']:
-                safety.current().observe(blocking_text,component='comments',operation='collection')
+            if comments is None:
+                comments, outcome, coverage, tool, warnings, error = assess(video_id, execution)
             coverage["finished_at"] = timestamp()
             configuration = {"max_comments": f"{max_comments},all,all,all,all", "comment_sort": "new",
                              "socket_timeout_seconds": 30, "process_timeout_seconds": timeout,

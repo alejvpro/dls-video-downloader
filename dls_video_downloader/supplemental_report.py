@@ -239,11 +239,27 @@ def _discovery_receipts(directory,start,end):
         except (OSError,ValueError):continue
         local=_local_date(r.get('started_at'))
         if local and start<=local<=end:
+            encountered=dict(r.get('encountered') or {})
+            coverage=dict(r.get('forward_coverage') or {})
+            tabs=dict(r.get('tab_coverage') or {})
+            # Early receipts keyed the Streams tab as "live" internally while
+            # the report schema called it "streams". Interpret, never rewrite,
+            # those historical receipts from their source fields and warnings.
+            if 'streams' not in tabs and ('live' in encountered or any(
+                    a.get('scope')=='streams' for a in r.get('operation_attempts',[]) if isinstance(a,dict))):
+                count=encountered.get('live',0)
+                limit=(r.get('limits') or {}).get('streams',0)
+                capped=count>=limit>0 or any('live: bounded head reached' in str(w) or
+                    'streams: bounded head reached' in str(w) for w in r.get('warnings',[]))
+                tabs['streams']={'status':'succeeded' if count or any(a.get('scope')=='streams' for a in r.get('operation_attempts',[]) if isinstance(a,dict)) else 'unknown',
+                    'requested_limit':limit,'listing_attempted':bool(count or any(a.get('scope')=='streams' for a in r.get('operation_attempts',[]) if isinstance(a,dict))),
+                    'entries_observed':count,'cap_hit':capped,'complete':False if capped else None}
+                if capped:coverage['complete']=False
             output.append(dict(run_id=r.get('run_id'),started_at=r.get('started_at'),trigger=r.get('trigger','unknown'),
-                limits=r.get('limits'),encountered=r.get('encountered'),new_ids=r.get('new_ids'),
-                tab_coverage=r.get('tab_coverage'),
+                limits=r.get('limits'),encountered=encountered,new_ids=r.get('new_ids'),
+                tab_coverage=tabs,
                 metadata_requests=r.get('metadata_requests'),enriched=len(r.get('enriched',[])),deferred=len(r.get('deferred',[])),
-                failures=len(r.get('failures',[])),coverage=r.get('forward_coverage'),stop_reason=r.get('stop_reason')))
+                failures=len(r.get('failures',[])),coverage=coverage or r.get('forward_coverage'),stop_reason=r.get('stop_reason')))
     return output
 
 

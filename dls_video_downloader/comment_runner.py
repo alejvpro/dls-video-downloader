@@ -109,8 +109,8 @@ def _summary(item):
 
 
 @safety.scoped(lambda a:Path(a['inventory_path']).resolve().parent,'comment-runner')
-def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
-        max_comments=1000, runtime_seconds=600, start=DEFAULT_START,
+def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=10,
+        max_comments=1000, runtime_seconds=900, start=DEFAULT_START,
         clock=None, monotonic=None, acquisition_lock=None, deadline=None,
         invocation_source='manual'):
     """Run sequentially under one deadline. Clock seams are for offline tests only."""
@@ -118,8 +118,8 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
         raise ValueError('max videos must be 1..10')
     if type(max_comments) is not int or not 1 <= max_comments <= 1000:
         raise ValueError('max comments must be 1..1000')
-    if type(runtime_seconds) is not int or not MIN_SECONDS <= runtime_seconds <= 600:
-        raise ValueError('runtime seconds must be 30..600')
+    if type(runtime_seconds) is not int or not MIN_SECONDS <= runtime_seconds <= 900:
+        raise ValueError('runtime seconds must be 30..900')
     clock = clock or (lambda: datetime.now(timezone.utc))
     monotonic = monotonic or time.monotonic
     end = monotonic() + runtime_seconds
@@ -184,6 +184,7 @@ def run(inventory_path, root=DEFAULT_ROOT, *, execute=False, max_videos=2,
                         collected = collect(video_id, root=root, max_comments=max_comments,
                                             timeout=600, before_collect=preflight,
                                             invocation_source=invocation_source,
+                                            operation_root=Path(inventory_path).resolve().parent/'acquisitions',
                                             purpose=('retry' if work['candidate']['phase']=='retry' else
                                                      'confirmation' if work['candidate']['collection_kind']=='confirmation' else
                                                      'initial' if work['candidate']['collection_kind']=='initial' else 'refresh'))

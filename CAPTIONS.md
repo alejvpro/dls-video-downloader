@@ -8,11 +8,12 @@ English track-listing evidence, independent JSON3/VTT outcomes, complete
 preservation attempts, confirmations, revisions and outstanding work. An
 advertised track is not the same as successful preservation of both payloads.
 
-Implemented and offline-tested. One supervised production collection was authorized
-but YouTube blocked its metadata lookup; no production caption payloads have been
-retrieved. **Unattended caption activation is not authorized.** Existing scheduled cycle
-commands omit `--captions` and continue metadata/comment work only. No caption
-cron entries or database migrations are required.
+Implemented, offline-tested and validated by supervised production preservation
+for original-English JSON3 and VTT. Unattended caption collection remains
+inactive: all six YouTube acquisition/supplemental cron entries are paused, and
+the proposed forward cycle with `--captions` is documented but not installed.
+The independent 15-minute notification dispatcher remains active. No caption-
+specific cron entry or database migration is used.
 
 ## Commands and authorization
 
@@ -28,8 +29,8 @@ Commands implemented for a separately authorized supervised validation:
 
 ```sh
 python3 -B -m dls_video_downloader captions collect VIDEO_ID --json
-python3 -B -m dls_video_downloader captions run --execute --max-videos 1 --json
-python3 -B -m dls_video_downloader cycle --execute --captions --max-caption-videos 1 --json
+python3 -B -m dls_video_downloader captions run --execute --max-videos 10 --runtime-seconds 900 --json
+python3 -B -m dls_video_downloader cycle --execute --captions --max-caption-videos 10 --caption-seconds 600 --json
 # --discover additionally authorizes the existing metadata phase.
 ```
 
@@ -39,6 +40,13 @@ network work. `--store-root` selects an independent caption tree. Global `--db`
 selects inventory. `cycle --captions` without `--execute` is rejected; default
 planning already displays caption decisions. **Do not add the flag to production
 cron until Level 1 validation and rollout approval.**
+
+Forward `captions run` and cycle defaults permit up to ten due videos, while the
+proposed caption phase is bounded to 600 seconds and each video to 300 seconds.
+These are operational safety ceilings, not a request to repeat work: the planner
+selects only initial collections, confirmations, or retries currently due. If a
+due set exceeds runtime or item capacity, remaining work stays pending for the
+next window. Historical collection is separately paced.
 
 ## Eligibility and source identity
 
@@ -168,20 +176,22 @@ and no historical attempt replays this forward timeline.
 
 ## Supplemental budgets, outcomes and inspection
 
-Order: requested metadata, comments, then **opt-in captions**. Defaults: one
-caption video per cycle (configurable 1–2), 180 caption seconds (30–300), at most
-four original English tracks per video, 16 MiB per representation, zero retries,
-20-second sockets, at most 60 seconds per metadata/payload subprocess. A shared
-600-second cycle deadline spans every phase; remaining time is rechecked before
-each request. Less than 30 seconds prevents starting a caption video; less than
-five seconds prevents starting another request. The emergency track bound reports
-ambiguity/incomplete coverage and requires review rather than claiming success.
+Order: requested metadata, comments, then **opt-in captions**. The proposed
+forward cycle allows up to ten due caption videos with a 600-second phase inside
+a 1,500-second overall deadline; supported ceilings are ten videos and 900 phase
+seconds. A single video retains a 300-second cap, four original-English tracks,
+16 MiB per representation, zero retries, 20-second sockets, and at most 60 seconds
+per listing/payload subprocess. Remaining time is checked before each request.
+Less than 30 seconds prevents starting a caption video; less than five seconds
+prevents another request. The track bound reports ambiguity/incomplete coverage.
 
-Caption work never launches media, holds its acquisition lock during network IO,
-or delays comments to reserve caption capacity. Nonblocking acquisition probes
-happen before requests; acquisition may start after a probe (the existing race).
-The cycle/runner/collector locks prevent overlapping supplemental/duplicate caption
-work. Independent phase outcomes, attempt counts, deferred/incomplete work,
+Caption work never launches media. Each actual metadata or payload subprocess
+atomically holds the common `state/acquisitions/.acquisition.lock`; its child
+inherits that lock descriptor. The separate runner/collector locks prevent
+overlapping supplemental or duplicate caption work; the shared lock additionally
+prevents acquisition/discovery from starting network work during a caption
+subprocess. Busy work defers without waiting or making a request. Independent
+phase outcomes, attempt counts, deferred/incomplete work,
 collection-record references and errors are in the existing cycle report and
 caption runner's bounded latest report. Empty successful listings may be
 operationally successful while caption preservation is still incomplete.

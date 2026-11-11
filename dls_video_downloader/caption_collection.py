@@ -9,8 +9,11 @@ import time
 from urllib.parse import urlparse, parse_qs
 
 from . import youtube_safety as safety
+from . import acquisition as media
 from . import comment_collection as network
 from . import comment_runner
+from .comment_collection import CommentBusy
+from .operations import OperationBusy
 from .captions import CaptionStore, DEFAULT_ROOT, FORMATS, MAX_BYTES, read_history, caption_lock, digest, encoded, validate
 from .comments import VIDEO_ID
 from .comment_planning import instant
@@ -101,13 +104,13 @@ except Exception as exc:
 '''
 
 
-def fetch(url,timeout,lock_fd):
-    return network.run_extractor([sys.executable,'-B','-c',HTTP_WORKER,url],timeout,lock_fd)
+def fetch(url,timeout,lock_fd,operation_fd=None):
+    return network.run_extractor([sys.executable,'-B','-c',HTTP_WORKER,url],timeout,lock_fd,operation_fd)
 
 
 @safety.scoped(lambda a:Path(a['root']).resolve().parent,'captions')
 def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', completion_evidence=None,
-            before_collect=None, clock=None, monotonic=None, invocation_source='manual'):
+            before_collect=None, clock=None, monotonic=None, invocation_source='manual',operation_root=None):
     if not isinstance(video_id,str) or not VIDEO_ID.fullmatch(video_id):raise ValueError('Expected an 11-character YouTube ID')
     if type(timeout) is not int or not 30<=timeout<=300:raise ValueError('Caption timeout must be 30..300')
     if purpose not in ('manual','initial','refresh','confirmation_24h','confirmation_7d'):raise ValueError('Unsupported caption purpose')
@@ -115,6 +118,7 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
     clock=clock or (lambda:datetime.now(timezone.utc));monotonic=monotonic or time.monotonic
     end=monotonic()+timeout
     root=Path(root).resolve()
+    operation_root=Path(operation_root).resolve() if operation_root is not None else root.parent/'acquisitions'
     # Validate root before acquiring a lock/creating operational data.
     from .comment_collection import PROJECT
     if root==PROJECT/'state' or any(root.is_relative_to(PROJECT/'state'/p) for p in ('acquisitions','comments')):
@@ -134,6 +138,7 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
                 invocation_source=invocation_source,
                 completion_evidence=completion_evidence,formats=[],tracks=[],availability=[],ambiguities=[],warnings=[],
                 complete=False,technical_failure=False,listing_success=False,outcome='failed',error=None,
+                busy_deferred=False,
                 tool=dict(name='yt-dlp',executable=network.YT_DLP,node_executable=network.NODE,version=None),
                 coverage=dict(scope='extractor-advertised original English tracks',finality='not_certified',accuracy='not_assessed'),
                 configuration=dict(formats=list(FORMATS),max_tracks=MAX_TRACKS,max_bytes=MAX_BYTES,
@@ -149,18 +154,44 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
                 message=network.safe_diagnostic(execution.stderr.decode('utf-8',errors='replace'))
                 record['warnings'].extend(line for line in message.splitlines() if 'WARNING:' in line)
                 if re.search(r'HTTP Error 401\b',message):message='Access denied: '+message
-                if comment_runner.blocking_evidence(dict(error=message),instant(clock())):raise ValueError(message)
+                blocking=comment_runner.blocking_evidence(dict(error=message),instant(clock()))
+                if blocking:
+                    record['blocking']=blocking
+                    if safety.current().status(clock())['network_allowed']:
+                        safety.current().observe(message,component='captions',operation='collection',now=clock())
+                    raise ValueError(message)
                 if execution.termination:raise ValueError(execution.termination)
                 if execution.returncode:raise ValueError(message or 'Caption subprocess failed')
                 return message
+            def execute_network(argv, request_timeout, *, partial=False):
+                try:
+                    with media.operation_lock(operation_root) as operation_fd:
+                        response=network.run_extractor(argv,request_timeout,fd,operation_fd)
+                        version_diag=network.safe_diagnostic(response.stderr.decode('utf-8',errors='replace'))
+                        version=re.search(r'\[debug\] yt-dlp version ([^\n]+)',version_diag)
+                        if version:record['tool']['version']=version.group(1)
+                        diagnostic(response)
+                        return response
+                except OperationBusy as exc:
+                    if partial:
+                        raise comment_runner.Deferred('video_acquisition_or_discovery_active') from exc
+                    raise CommentBusy('A video acquisition or discovery operation is active') from exc
+            def execute_payload(url, request_timeout):
+                try:
+                    with media.operation_lock(operation_root) as operation_fd:
+                        response=fetch(url,request_timeout,fd,operation_fd)
+                        diagnostic(response)
+                        return response
+                except OperationBusy as exc:
+                    raise comment_runner.Deferred('video_acquisition_or_discovery_active') from exc
             try:
-                execution=network.run_extractor(listing_command(video_id),budget(),fd)
+                execution=execute_network(listing_command(video_id),budget())
                 # Retain tool identity even when diagnostic() rejects a blocked
                 # or nonzero extraction before a metadata object is available.
                 tool_diagnostic=network.safe_diagnostic(execution.stderr.decode('utf-8',errors='replace'))
                 version=re.search(r'\[debug\] yt-dlp version ([^\n]+)',tool_diagnostic)
                 record['tool']['version']=version.group(1) if version else None
-                message=diagnostic(execution)
+                message=network.safe_diagnostic(execution.stderr.decode('utf-8',errors='replace'))
                 # --list-subs can print tables before the single JSON line.
                 lines=execution.stdout.decode('utf-8').splitlines()
                 data=json.loads(next(line for line in reversed(lines) if line.startswith('{')))
@@ -183,8 +214,8 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
                         if fmt not in track['formats']:continue
                         response=None;stage='retrieval'
                         try:
-                            response=fetch(track['formats'][fmt],budget(),fd)
-                            info=diagnostic(response)
+                            response=execute_payload(track['formats'][fmt],budget())
+                            info=network.safe_diagnostic(response.stderr.decode('utf-8',errors='replace'))
                             stage='validation'
                             validate(response.stdout,fmt)
                             raw=response.stdout;payloads[key]=raw
@@ -194,6 +225,12 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
                             row['content_type']=content_type.group(1) if content_type else None
                         except (OSError,ValueError,TimeoutError,UnicodeError,comment_runner.Deferred) as exc:
                             row.update(status='deferred' if isinstance(exc,comment_runner.Deferred) else 'validation_failed' if stage=='validation' else 'retrieval_failed',error=network.safe_diagnostic(exc))
+                            # A competing video operation is not a YouTube failure:
+                            # retain any earlier format payloads from this attempt,
+                            # but do not consume retry budget or alter safety state.
+                            if isinstance(exc,comment_runner.Deferred) and str(exc)=='video_acquisition_or_discovery_active':
+                                record['busy_deferred']=True
+                                break
                             record['technical_failure']=True
                             blocked=comment_runner.blocking_evidence(dict(error=row['error']),instant(clock()))
                             if blocked:record['blocking']=blocked;raise ValueError(row['error'])
@@ -201,7 +238,9 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
                 # Required formats may be recovered from verified earlier bytes.
                 preserved=lambda r:r.get('sha256') is not None or (r['track_id'],r['format']) in payloads
                 record['complete']=bool(tracks) and not ambiguities and all(preserved(r) for r in record['formats']) and len(record['formats'])==len(tracks)*len(FORMATS)
-                record['outcome']=('revised' if any(r['status']=='revised' for r in record['formats']) else 'unchanged' if all(r['status'] in ('unchanged','reused') for r in record['formats']) else 'complete') if record['complete'] else 'partial' if any(preserved(r) for r in record['formats']) else 'ambiguous' if ambiguities else 'missing' if not tracks else 'failed' if record['technical_failure'] else 'missing_formats'
+                record['outcome']=('revised' if any(r['status']=='revised' for r in record['formats']) else 'unchanged' if all(r['status'] in ('unchanged','reused') for r in record['formats']) else 'complete') if record['complete'] else 'partial' if any(preserved(r) for r in record['formats']) else 'deferred' if record['busy_deferred'] else 'ambiguous' if ambiguities else 'missing' if not tracks else 'failed' if record['technical_failure'] else 'missing_formats'
+            except CommentBusy:
+                raise
             except safety.Blocked:
                 if not record['listing_success']:raise
                 record.update(technical_failure=True,error='shared_youtube_block',outcome='partial' if payloads else 'failed')
@@ -219,5 +258,5 @@ def collect(video_id, *, root=DEFAULT_ROOT, timeout=180, purpose='manual', compl
             if saved.get('blocking'):
                 directory=root/'runner';directory.mkdir(parents=True,exist_ok=True)
                 comment_runner.atomic_json(directory/'cooldown.json',saved['blocking'])
-            saved['exit_code']=130 if record['error']=='interrupted' or any(r.get('error')=='interrupted' for r in record['formats']) else 2 if record['technical_failure'] or record['ambiguities'] else 0
+            saved['exit_code']=130 if record['error']=='interrupted' or any(r.get('error')=='interrupted' for r in record['formats']) else 75 if record['busy_deferred'] else 2 if record['technical_failure'] or record['ambiguities'] else 0
             return saved

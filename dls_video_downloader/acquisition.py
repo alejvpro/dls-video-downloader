@@ -333,7 +333,9 @@ def operation_lock(root):
             raise OperationBusy("Another acquisition or discovery operation is running") from exc
         _operation_fd = lock.fileno()
         try:
-            yield
+            # Network-capable child workflows pass this descriptor through so
+            # the exclusion remains held if the parent is interrupted.
+            yield lock.fileno()
         finally:
             _operation_fd = None
 

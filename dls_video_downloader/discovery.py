@@ -2,8 +2,10 @@
 from collections import Counter
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 import uuid
 
 from . import youtube_safety as safety
@@ -14,6 +16,41 @@ from .inventory import FIELDS, encoded, import_document, now, report
 from .operations import (LOG_LIMIT, cleanup_staging, forward_allowed, retry_pending,
                          retry_failure, retry_success, run_record, safe_text)
 from .operations import OperationBusy, record_overlap
+
+RECOVERY_PAGE_SIZE = 200
+RECOVERY_TIMEOUT_SECONDS = 120
+
+
+def _read_recovery(path):
+    try:
+        raw=Path(path).read_bytes()
+    except FileNotFoundError:
+        return {'version':1,'tabs':{}}
+    if len(raw)>65536:
+        raise ValueError('Oversized forward recovery state; manual review required')
+    data=json.loads(raw)
+    if data.get('version')!=1 or not isinstance(data.get('tabs'),dict):
+        raise ValueError('Invalid forward recovery state; manual review required')
+    for tab,item in data['tabs'].items():
+        if tab not in ('live','videos') or not isinstance(item,dict) or type(item.get('next_start')) is not int or item['next_start']<1:
+            raise ValueError('Invalid per-tab recovery cursor; manual review required')
+    return data
+
+
+def _write_recovery(path,data):
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    if not data.get('tabs'):
+        path.unlink(missing_ok=True)
+        return
+    raw=json.dumps(data,ensure_ascii=False,sort_keys=True,indent=2).encode()
+    if len(raw)>65536:raise ValueError('Forward recovery state exceeds bound')
+    fd,name=tempfile.mkstemp(prefix='.discovery-recovery-',dir=path.parent)
+    try:
+        with os.fdopen(fd,'wb') as stream:
+            stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        os.replace(name,path)
+    finally:
+        if os.path.exists(name):os.unlink(name)
 
 
 def compact(document, flat=False):
@@ -71,7 +108,7 @@ def enrichment_candidates(db, positions, items, verified, start, *, honor_retrie
 @safety.scoped(lambda a:a['state'] or safety.state_from_db(a['db']),'video-runner')
 def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_limit=75,
              max_enrich=8, max_downloads=2, start=DEFAULT_START, only_id=None, state=None,
-             stale_hours=72, retry_base_minutes=60, retry_max_hours=24):
+             stale_hours=72, retry_base_minutes=60, retry_max_hours=24, invocation_source='manual'):
     if per_tab is not None:
         streams_limit = videos_limit = per_tab
     if (not 1 <= streams_limit <= 200 or not 1 <= videos_limit <= 200
@@ -81,6 +118,8 @@ def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_
         raise ValueError("Invalid limits: tabs 1..200, enrichment 0..20, downloads 1..3, retention >=24h")
     if only_id and not re.fullmatch(r"[A-Za-z0-9_-]{11}", only_id):
         raise ValueError("Invalid supervised video ID")
+    if invocation_source not in ('scheduled','manual','other','unknown'):
+        raise ValueError('Invalid invocation source')
     state = (state or media.PROJECT / "state").resolve()
     if not state.is_relative_to(media.PROJECT):
         raise ValueError("Workflow state must remain inside the project")
@@ -90,7 +129,7 @@ def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_
             safety.current().ensure('video_run')
             return _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                                     max_downloads, start, only_id, state, stale_hours,
-                                    retry_base_minutes, retry_max_hours)
+                                    retry_base_minutes, retry_max_hours, invocation_source)
     except OperationBusy:
         record_overlap(db, 'overlap-' + uuid.uuid4().hex)
         raise
@@ -98,12 +137,13 @@ def workflow(db, *, acquire_media=False, per_tab=None, streams_limit=25, videos_
 
 def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                      max_downloads, start, only_id, state, stale_hours,
-                     retry_base_minutes, retry_max_hours):
+                     retry_base_minutes, retry_max_hours, invocation_source):
     run_id = now().replace(":", "") + "-" + uuid.uuid4().hex[:8]
     directory = state / "runs" / run_id
     directory.mkdir(parents=True)
     events = directory / "events.jsonl"
     result = {"run_id": run_id, "mode": "discovery+acquisition" if acquire_media else "discovery-only",
+              'trigger':invocation_source,
               "start_date": start, "limits": {"streams": streams_limit, "videos": videos_limit, "max_enrich": max_enrich, "max_downloads": max_downloads},
               "encountered": {}, "new_ids": [], "enriched": [], "failures": [], "acquired": [],
               "deferred": [], "already_verified": [], "warnings": [], "log": str(events), "retry_deferred": [], "coverage": {}}
@@ -127,7 +167,13 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         before = {r[0] for r in db.execute("SELECT id FROM videos")}
         positions = {}
         event("start", mode=result["mode"], limits=result["limits"], only_id=only_id)
+        recovery_path=state/'discovery-recovery.json'
+        recovery=_read_recovery(recovery_path)
+        recovery_changed=False
         for source, tab, limit in (("live", "streams", streams_limit), ("videos", "videos", videos_limit)):
+            result['coverage'][source]={'requested_limit':limit,'listing_attempted':True,
+                'listing_status':'attempted','listing_complete':False,'forward_window_complete':False,
+                'prior_head_seen':False,'recovery_pending':False,'complete':False}
             try:
                 safety.current().ensure('metadata')
                 document = json.loads(media.run(common + ["--flat-playlist", "--playlist-end", str(limit),
@@ -139,23 +185,96 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
                 frontier = db.execute("SELECT head_id FROM scan_frontiers WHERE source=?", (source,)).fetchone()
                 ids = [e['id'] for e in entries]
                 overlap = bool(frontier and frontier[0] in ids)
-                result['coverage'][source] = {'prior_head_seen': overlap, 'initial_scan': not bool(frontier), 'cap_reached': len(entries) == limit}
+                tab_report={'prior_head_seen':overlap,'initial_scan':not bool(frontier),
+                            'head_entries':len(entries),'requested_limit':limit,
+                    'listing_attempted':True,'listing_status':'succeeded',
+                    'listing_complete':len(entries)<limit,
+                            'cap_reached':len(entries)==limit,'recovery_page_size':0,
+                            'recovery_page_start':None,'frontier_reached':overlap if frontier else None,
+                            'recovery_pending':False,'complete':False}
                 if frontier and not overlap:
-                    failure('coverage', ValueError(f'{source}: previous scan head missing; possible discovery gap'))
+                    cursor=recovery['tabs'].get(source)
+                    if cursor and cursor.get('terminal_missing'):
+                        tab_report.update(recovery_pending=True,recovery_state='frontier_unavailable_manual_review')
+                    else:
+                        page_start=cursor['next_start'] if cursor else limit+1
+                        page_end=page_start+RECOVERY_PAGE_SIZE-1
+                        tab_report.update(recovery_page_start=page_start,recovery_page_size=RECOVERY_PAGE_SIZE)
+                        tab_report['recovery_listing_attempted']=True
+                        try:
+                            safety.current().ensure('metadata')
+                            page_doc=json.loads(media.run(common+["--flat-playlist","--playlist-start",str(page_start),
+                                "--playlist-end",str(page_end),f"https://www.youtube.com/channel/{CHANNEL}/{tab}"],
+                                directory/f"{source}.recovery-{page_start}.stderr.log",RECOVERY_TIMEOUT_SECONDS))
+                            page=channel_entries(page_doc,RECOVERY_PAGE_SIZE)
+                            with db:
+                                page_import=import_document(db,compact(page_doc,flat=True),source,f"channel:{CHANNEL}/{tab}")
+                            result['recovery_entries'] = result.get('recovery_entries',{})
+                            result['recovery_entries'][source]=len(page)
+                            page_ids=[e['id'] for e in page]
+                            result['encountered'][source]+=len(page)
+                            tab_report['recovery_page_cap_hit']=len(page)==RECOVERY_PAGE_SIZE
+                            tab_report['recovery_page_entries']=len(page)
+                            event('recovery_page',source=source,start=page_start,entries=len(page),
+                                  cap_hit=len(page)==RECOVERY_PAGE_SIZE,frontier_reached=frontier[0] in page_ids)
+                            tab_report['new_observations']=imported['new_observations']+page_import['new_observations']
+                            if frontier[0] in page_ids:
+                                boundary=page_ids.index(frontier[0])
+                                for offset,entry in enumerate(page[:boundary],start=page_start-1):
+                                    positions[entry['id']]=min(offset,positions.get(entry['id'],offset))
+                                tab_report.update(frontier_reached=True,recovery_pending=False,recovery_state='reconciled')
+                                recovery['tabs'].pop(source,None);recovery_changed=True
+                                with db:
+                                    db.execute("INSERT INTO scan_frontiers VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET head_id=excluded.head_id,scanned_at=excluded.scanned_at",(source,ids[0],now()))
+                            elif len(page)<RECOVERY_PAGE_SIZE:
+                                tab_report.update(frontier_reached=False,recovery_pending=True,recovery_state='frontier_unavailable_manual_review')
+                                recovery['tabs'][source]={'frontier_id':frontier[0],'next_start':page_start,
+                                    'started_at':(cursor or {}).get('started_at',now()),'terminal_missing':True}
+                                recovery_changed=True
+                                failure('coverage',ValueError(f'{source}: previous frontier was not present in the bounded recovery listing'))
+                            else:
+                                for offset,entry in enumerate(page,start=page_start-1):
+                                    positions[entry['id']]=min(offset,positions.get(entry['id'],offset))
+                                recovery['tabs'][source]={'frontier_id':frontier[0],'next_start':page_end+1,
+                                    'started_at':(cursor or {}).get('started_at',now())}
+                                tab_report.update(frontier_reached=False,recovery_pending=True,recovery_state='page_deferred')
+                                recovery_changed=True
+                                failure('coverage',ValueError(f'{source}: recovery page cap reached before previous frontier'))
+                        except safety.Blocked:
+                            raise
+                        except (ValueError,OSError) as exc:
+                            failure('coverage_recovery',exc)
+                            tab_report.update(recovery_pending=True,recovery_state='page_failed')
+                    result['warnings'].append(f'{source}: previous frontier not in shallow head; bounded recovery remains incomplete')
                 elif not frontier and len(entries) == limit:
                     result['warnings'].append(f'{source}: initial bounded baseline reached {limit} entries')
-                if ids and (not frontier or overlap):
+                if ids and (not frontier or overlap or tab_report.get('frontier_reached')):
                     with db:
                         db.execute("INSERT INTO scan_frontiers VALUES(?,?,?) ON CONFLICT(source) DO UPDATE SET head_id=excluded.head_id,scanned_at=excluded.scanned_at", (source, ids[0], now()))
                 for position, item in enumerate(entries):
                     positions[item["id"]] = min(position, positions.get(item["id"], limit))
+                tab_report['complete']=(not tab_report['recovery_pending'] and
+                    (not frontier or tab_report['frontier_reached']) and
+                    (not tab_report['cap_reached'] or bool(frontier and tab_report['frontier_reached'])))
+                tab_report['forward_window_complete']=tab_report['complete']
+                result['coverage'][source]=tab_report
                 event("tab_imported", source=source, entries=len(entries), observations=imported["new_observations"])
             except safety.Blocked as exc:
+                result['coverage'][source]['listing_status']='blocked'
                 result.update(status='deferred',shared_block=str(exc))
                 result['deferred'].append({'operation':'youtube','reason':str(exc)})
                 return result
             except (ValueError, OSError) as exc:
+                result['coverage'][source].update(listing_status='failed',complete=False,forward_window_complete=False)
                 failure(source, exc)
+        requested_tabs=[v for v in result['coverage'].values() if v.get('requested_limit',0)]
+        result['coverage_summary']={'complete':bool(requested_tabs) and all(v.get('complete') for v in requested_tabs),
+            'streams':result['coverage'].get('live',{}),'videos':result['coverage'].get('videos',{}),
+            'recovery_pending_tabs':[k for k,v in result['coverage'].items() if v.get('recovery_pending')],
+            'fixed_forward_start':start,
+            'basis':'requested forward heads reconciled to prior tab frontiers; not exhaustive channel inventory'}
+        if not result['coverage_summary']['complete']:
+            result['exit_code']=2
         items = {i["id"]: i for i in report(db, start)["items"]}
         result["new_ids"] = sorted(set(positions) - before)
         verified = {r[0] for r in db.execute("SELECT video_id FROM acquisitions")}
@@ -200,6 +319,11 @@ def _workflow_locked(db, acquire_media, streams_limit, videos_limit, max_enrich,
         result['retry_deferred'].extend(deferred)
         if json.dumps(metadata_retry,sort_keys=True)!=prior_metadata_retry:
             forward.save_state(state,metadata_retry)
+        # Pending initial-enrichment IDs are now durable before the catch-up
+        # cursor advances. If interrupted before this point, the same page is
+        # safely replayed; afterward deferred IDs survive head movement.
+        if recovery_changed:
+            _write_recovery(recovery_path,recovery)
         enriched_metadata = {}
         failed_enrichment = set()
         for _, video_id in enrich[:max_enrich]:

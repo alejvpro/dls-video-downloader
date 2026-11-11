@@ -20,9 +20,11 @@ command used.
 `dls_video_downloader.comments.CommentStore` stores **yt-dlp-extracted comment
 objects**, not raw YouTube API responses. An independent manual collector retrieves
 one explicit video's comments and submits them to this store. A bounded runner
-can select and execute due work when explicitly requested or through the installed
-unified supplemental cycle. The existing media runner does not invoke comment
-collection. Offline tests use
+can select and execute due work when explicitly requested or through the
+implemented unified supplemental cycle. DLS collection cron entries are currently
+paused; the proposed 10:30 AM and 7:30 PM cycles use ten-item comment ceilings
+without changing due or refresh policy. The existing media runner does not invoke
+comment collection. Offline tests use
 synthetic objects and disposable stores. A pure offline refresh policy is also
 implemented; it evaluates supplied history but does not collect or schedule work.
 
@@ -550,8 +552,8 @@ python3 -B -m dls_video_downloader comments run
 python3 -B -m dls_video_downloader comments run --json
 
 # Explicit execution capability; live validation requires separate approval.
-python3 -B -m dls_video_downloader comments run --execute --max-videos 2 \
-  --max-comments 1000 --runtime-seconds 600 --json
+python3 -B -m dls_video_downloader comments run --execute --max-videos 10 \
+  --max-comments 1000 --runtime-seconds 900 --json
 ```
 
 Global `--db PATH` precedes `comments`; `--store-root PATH` and `--start-date`
@@ -561,9 +563,13 @@ remaining due count, exclusions, publication anchors, history and cooldown. It i
 not a promise of execution: current eligibility, locks, timing and history can
 change before execution. `comments plan` remains separately read-only and detailed.
 
-Defaults are two videos, 1,000 comments each, sequentially, with one 600-second
-invocation budget. Allowed limits are 1–10 videos, 1–1,000 comments and 30–600
-seconds. The monotonic deadline starts before planning and never resets between
+Direct `comments run` and the unified forward cycle now default to at most ten
+due videos per invocation. This is a configurable safety ceiling, not a fixed
+daily target: planners still select only work that is due. The cycle uses up to
+900 comment-phase seconds; each attempt remains individually bounded by
+the existing 600-second extractor timeout, 1,000-comment cap and zero internal
+retries. Direct runner runtime accepts 30–900 seconds. The monotonic deadline
+starts before planning and never resets between
 videos. Each extraction timeout is the smaller of the remaining invocation budget
 and original publication-age window, rounded down with a one-second reserve.
 At least 30 seconds of extraction allowance must remain; otherwise defer instead
@@ -580,12 +586,15 @@ A manual collection completed since initial planning can therefore consume the d
 opportunity without a duplicate network collection. The hook can only reduce the
 caller's timeout. No policy/schema changes or importer calls are involved.
 
-Before each request the runner probes the existing acquisition lock nonblockingly.
-If busy, it defers; if the lock file is absent it does not create it. It never holds
-that lock during extraction or changes the video runner. **This cannot guarantee
-strict mutual exclusion:** acquisition can begin after the probe. Video priority
-means deferring to already-active acquisition, without making the video cron skip
-because comments held its lock. Stronger coordination needs a separate design.
+The runner retains a nonblocking probe as an early courtesy check, then the
+collector atomically acquires the same `state/acquisitions/.acquisition.lock`
+immediately before extraction. The lock descriptor is passed to yt-dlp so it
+remains held if the parent is interrupted while the child is still active. Thus a
+new acquisition/discovery cannot start a network operation during comment
+extraction, and comments cannot start after an acquisition wins the race. Busy
+work defers without waiting or requesting YouTube. Read-only planning remains
+available. Lock order is cycle → comment runner → comment collector → shared
+acquisition lock; no acquisition path takes these locks in reverse order.
 
 Only explicit execution writes these small independent files:
 

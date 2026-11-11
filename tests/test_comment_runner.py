@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from dls_video_downloader import comment_runner as runner
 from dls_video_downloader import comment_collection as collector
+from dls_video_downloader import acquisition as media
 from dls_video_downloader.cli import main
 from dls_video_downloader.comments import CommentStore, IRISHWEEGEE
 from dls_video_downloader.classification import CHANNEL
@@ -27,7 +28,8 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name);self.root = self.base/'comments'
-        self.path = self.base/'inventory.sqlite3';self.media_lock = self.base/'media.lock'
+        self.path = self.base/'inventory.sqlite3';self.media_lock = self.base/'acquisitions/.acquisition.lock'
+        self.media_lock.parent.mkdir()
         self.db = connect(self.path);self.addCleanup(self.db.close)
         self.now = START + 3*DAY;self.elapsed = 0
         self.network = []
@@ -45,7 +47,7 @@ class RunnerTests(unittest.TestCase):
                                        'timestamp':123456,'_time_text':'2 days ago (edited)'}] if target else [],
                                 outcome=outcome,collected_at=(when or self.now).isoformat())
 
-    def extraction(self, argv, timeout, fd):
+    def extraction(self, argv, timeout, fd, operation_fd=None):
         self.network.append((argv[-1].split('=')[-1],timeout))
         return collector.Execution(stdout=json.dumps({'id':self.network[-1][0], 'comments':[]}).encode(),returncode=0)
 
@@ -61,7 +63,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_dry_run_no_writes_or_network_and_budget(self):
         for video in IDS:self.ingest(video)
-        before=self.files();out=self.invoke(execute=False)
+        before=self.files();out=self.invoke(execute=False,max_videos=2)
         self.assertEqual(len(out['selected']),2);self.assertEqual(out['budget_deferred'],1)
         self.assertEqual(out['mode'],'dry-run');self.assertEqual(self.files(),before)
         self.assertEqual(self.network,[]);self.assertFalse(self.root.exists())
@@ -73,7 +75,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_success_multiple_sequential_with_portable_evidence(self):
         for video in IDS:self.ingest(video)
-        before=self.path.read_bytes();out=self.invoke()
+        before=self.path.read_bytes();out=self.invoke(max_videos=2)
         self.assertEqual([x[0] for x in self.network],list(IDS[:2]))
         self.assertTrue(all(w['status']=='completed' for w in out['work']))
         self.assertEqual(out['exit_code'],0);self.assertEqual(self.path.read_bytes(),before)
@@ -107,7 +109,7 @@ class RunnerTests(unittest.TestCase):
     def test_ordinary_failure_does_not_starve_next_video(self):
         for video in IDS[:2]:self.ingest(video)
         original=self.extraction
-        def fail(argv,timeout,fd):
+        def fail(argv,timeout,fd,operation_fd=None):
             if not self.network:
                 self.network.append((IDS[0],timeout))
                 return collector.Execution(stderr=b'ERROR: temporary extraction failure',returncode=1)
@@ -120,7 +122,7 @@ class RunnerTests(unittest.TestCase):
     def test_rate_limit_stops_batch_persists_cooldown_and_preserves_history(self):
         self.ingest();self.ingest(IDS[1]);previous=self.record(when=self.now-2*DAY,target=True)
         snapshot=Path(self.root/IDS[0]/'snapshots'/f"{previous['snapshot_hash']}.json").read_bytes()
-        def limited(argv,timeout,fd):
+        def limited(argv,timeout,fd,operation_fd=None):
             self.network.append((argv[-1],timeout))
             return collector.Execution(stderr=b'ERROR: HTTP Error 429: Too Many Requests\nRetry-After: 28800',returncode=1)
         self.extraction=limited;out=self.invoke()
@@ -142,11 +144,12 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.network,[]);self.assertEqual(self.media_lock.read_bytes(),b'preserved')
         self.assertFalse((self.root/'comments.sqlite3').exists())
 
-    def test_probe_releases_video_lock_before_network(self):
+    def test_shared_video_lock_remains_held_during_comment_extractor(self):
         self.ingest();self.media_lock.touch()
         original=self.extraction
         def checked(*args):
-            with self.media_lock.open('rb') as stream:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with self.media_lock.open('rb') as stream:
+                with self.assertRaises(BlockingIOError):fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
             return original(*args)
         self.extraction=checked
         self.assertEqual(self.invoke()['exit_code'],0)
@@ -218,7 +221,7 @@ class RunnerTests(unittest.TestCase):
         self.ingest();self.ingest(IDS[1]);original=self.extraction
         def slow(*args):
             value=original(*args);self.elapsed+=575;return value
-        self.extraction=slow;out=self.invoke()
+        self.extraction=slow;out=self.invoke(runtime_seconds=600,max_videos=2)
         self.assertEqual(len(self.network),1)
         self.assertEqual(out['stop_reason'],'insufficient_remaining_runtime')
         self.assertEqual(out['work'][1]['status'],'deferred')
@@ -228,7 +231,7 @@ class RunnerTests(unittest.TestCase):
         def timeout(*args):
             self.elapsed+=600;self.network.append(args)
             return collector.Execution(returncode=-9,termination='timeout')
-        self.extraction=timeout;out=self.invoke()
+        self.extraction=timeout;out=self.invoke(runtime_seconds=600,max_videos=2)
         self.assertEqual(len(self.network),1);self.assertEqual(out['exit_code'],2)
         self.assertEqual(out['work'][0]['status'],'failed')
         record=json.loads(Path(out['work'][0]['collection_record']).read_text())
@@ -281,8 +284,9 @@ class RunnerTests(unittest.TestCase):
         out=self.invoke(execute=False,max_videos=1)
         self.assertEqual(out['selected'][0]['id'],IDS[1])
 
-    def test_no_video_lock_file_created(self):
-        self.ingest();self.invoke();self.assertFalse(self.media_lock.exists())
+    def test_shared_video_lock_released_after_collection(self):
+        self.ingest();self.invoke();self.assertTrue(self.media_lock.exists())
+        with media.operation_lock(self.base/'acquisitions'):pass
 
     def test_cli_defaults_dry_run_json_and_human(self):
         self.ingest();before=self.files()
@@ -334,7 +338,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_target_source_timestamp_and_uncertainty_preserved_by_runner(self):
         self.ingest()
-        def positive(argv,timeout,fd):
+        def positive(argv,timeout,fd,operation_fd=None):
             return collector.Execution(stdout=json.dumps({'id':IDS[0],'comments':[{
                 'id':'target','author_id':IRISHWEEGEE,'text':'  untouched\ntext ',
                 'timestamp':123456,'_time_text':'2 days ago (edited)'}]}).encode(),returncode=0)
@@ -352,6 +356,14 @@ class RunnerTests(unittest.TestCase):
         with patch.object(collector,'run_extractor',side_effect=self.extraction):
             collector.collect(IDS[0],root=self.root,timeout=40,before_collect=lambda:300)
         self.assertEqual(self.network[0][1],40)
+
+    def test_direct_comment_collection_holds_shared_operation_lock(self):
+        self.ingest()
+        with media.operation_lock(self.base/'acquisitions') as owner:
+            with patch.object(collector,'run_extractor') as extract:
+                with self.assertRaisesRegex(collector.CommentBusy,'acquisition or discovery'):
+                    collector.collect(IDS[0],root=self.root)
+                extract.assert_not_called()
 
     def test_failed_cooldown_persistence_stops_further_network(self):
         self.ingest();self.ingest(IDS[1])
@@ -378,7 +390,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_invalid_limits_do_not_write(self):
         for kwargs in ({'max_videos':0},{'max_videos':11},{'max_comments':1001},
-                       {'runtime_seconds':29},{'runtime_seconds':601}):
+                       {'runtime_seconds':29},{'runtime_seconds':901}):
             with self.assertRaises(ValueError):self.invoke(**kwargs)
         self.assertFalse(self.root.exists())
 

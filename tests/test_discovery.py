@@ -3,6 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 import io
+import subprocess
+import sys
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -44,7 +46,8 @@ class DiscoveryTests(unittest.TestCase):
         if "--flat-playlist" in args:
             limit = int(args[args.index("--playlist-end") + 1])
             entries = self.live if args[-1].endswith("/streams") else self.videos
-            return json.dumps({"channel_id": CHANNEL, "epoch": 100, "entries": entries[:limit]})
+            start = int(args[args.index('--playlist-start')+1]) if '--playlist-start' in args else 1
+            return json.dumps({"channel_id": CHANNEL, "epoch": 100, "entries": entries[start-1:limit]})
         video_id = args[-1].split("=")[-1]
         # The forward workflow enriches every new listed ID, including items
         # that authoritative metadata later classifies Skip or Review.
@@ -95,6 +98,19 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(acquire.call_args.args[1], DAILY)
         self.assertIn(CLUB, result['already_verified'])
         self.assertTrue(all('--playlist-end' in c for c in self.calls if '--flat-playlist' in c))
+
+    def test_status_separates_historical_budget_deferral_from_resolved_acquisition(self):
+        self.run_workflow()
+        with self.db:
+            self.db.execute('INSERT INTO acquisitions VALUES(?,?,?,?,?,?)',(CLUB,'time','media','receipt',10,'hash'))
+        (self.state/'retry.json').write_text(json.dumps({'version':1,'failures':{},'cooldown_until':None,
+            'deferred_initial':{CLUB:'2026-11-01T00:00:00+00:00'}}))
+        output=io.StringIO()
+        with redirect_stdout(output):self.assertEqual(main(['--db',str(self.state/'db.sqlite3'),'status','--json']),0)
+        enrichment=json.loads(output.getvalue())['forward_enrichment']
+        self.assertNotIn(CLUB,enrichment['budget_deferred_ids'])
+        self.assertIn(CLUB,enrichment['historical_budget_deferred_ids'])
+        self.assertIn(CLUB,enrichment['acquired_historical_deferred_ids'])
 
     def test_overrides_preserved_and_review_never_downloaded(self):
         self.videos.append({'id': 'abcdefghijk', 'title': 'Original interview', '_type': 'url'})
@@ -161,12 +177,24 @@ class DiscoveryTests(unittest.TestCase):
                     media.acquire(self.db, DAILY, root=self.state / 'acquisitions')
                 run.assert_not_called()
 
+    def test_shared_operation_lock_contends_across_independent_process(self):
+        source="from pathlib import Path; from dls_video_downloader.acquisition import operation_lock; from dls_video_downloader.operations import OperationBusy; import sys\ntry:\n with operation_lock(Path(sys.argv[1])): print('acquired')\nexcept OperationBusy: print('busy')"
+        with media.operation_lock(self.state/'acquisitions'):
+            blocked=subprocess.run([sys.executable,'-c',source,str(self.state/'acquisitions')],
+                cwd=media.PROJECT,text=True,capture_output=True,timeout=10,check=True)
+        allowed=subprocess.run([sys.executable,'-c',source,str(self.state/'acquisitions')],
+            cwd=media.PROJECT,text=True,capture_output=True,timeout=10,check=True)
+        self.assertEqual(blocked.stdout.strip(),'busy')
+        self.assertEqual(allowed.stdout.strip(),'acquired')
+
     def test_bounds_and_zero_enrichment(self):
         with self.assertRaises(ValueError):
             self.run_workflow(per_tab=201)
         result = self.run_workflow(per_tab=1, max_enrich=0, acquire_media=True)
         self.assertEqual(result['encountered'], {'live': 1, 'videos': 1})
         self.assertTrue(result['warnings'])
+        self.assertFalse(result['coverage_summary']['complete'])
+        self.assertEqual(result['exit_code'],2)
         self.assertEqual(result['download_attempts'], 0)
         self.assertEqual(len(self.calls), 2)
 
@@ -207,6 +235,49 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue({CLUB,SKIP} <= set(second['enriched']))
         state=json.loads((self.state/'retry.json').read_text())
         self.assertFalse(pending & set(state['deferred_initial']))
+
+    def test_gap_recovery_pages_to_prior_frontier_and_enriches_missing_forward_ids(self):
+        self.run_workflow(streams_limit=1,videos_limit=1,max_enrich=8)
+        old_frontier=self.db.execute("select head_id from scan_frontiers where source='live'").fetchone()[0]
+        newer=[dict(self.live[0],id=f'live{i:07d}') for i in range(3)]
+        for row in newer:self.full[row['id']]=dict(self.full[DAILY],id=row['id'])
+        self.live=newer+self.live
+        result=self.run_workflow(streams_limit=1,videos_limit=1,max_enrich=8)
+        self.assertEqual(result['coverage']['live']['frontier_reached'],True)
+        self.assertTrue(result['coverage']['live']['complete'])
+        self.assertEqual(self.db.execute("select head_id from scan_frontiers where source='live'").fetchone()[0],newer[0]['id'])
+        self.assertIn(newer[0]['id'],result['enriched'])
+        self.assertFalse((self.state/'discovery-recovery.json').exists())
+
+    def test_recovery_page_cap_before_frontier_persists_cursor_and_resumes(self):
+        self.run_workflow(streams_limit=1,videos_limit=1,max_enrich=8)
+        self.live=[dict(self.live[0],id=f'live{i:07d}') for i in range(202)]+self.live
+        for row in self.live:self.full[row['id']]=dict(self.full[DAILY],id=row['id'])
+        first=self.run_workflow(streams_limit=1,videos_limit=1,max_enrich=0)
+        self.assertFalse(first['coverage']['live']['frontier_reached'])
+        self.assertTrue(first['coverage']['live']['recovery_pending'])
+        self.assertFalse(first['coverage_summary']['complete'])
+        state=json.loads((self.state/'discovery-recovery.json').read_text())
+        self.assertEqual(state['tabs']['live']['next_start'],202)
+        second=self.run_workflow(streams_limit=1,videos_limit=1,max_enrich=1)
+        self.assertTrue(second['coverage']['live']['frontier_reached'])
+        self.assertFalse((self.state/'discovery-recovery.json').exists())
+
+    def test_enrichment_interruption_after_reconciliation_keeps_pending_ids(self):
+        self.run_workflow(streams_limit=1,videos_limit=1,max_enrich=8)
+        newer=[dict(self.live[0],id=f'live{i:07d}') for i in range(2)]
+        for row in newer:self.full[row['id']]=dict(self.full[DAILY],id=row['id'])
+        self.live=newer+self.live
+        original=self.fake
+        def interrupted(args,log,timeout):
+            if '--flat-playlist' not in args:raise KeyboardInterrupt
+            return original(args,log,timeout)
+        with patch.object(media,'run',side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                workflow(self.db,state=self.state,streams_limit=1,videos_limit=1,max_enrich=8)
+        retry=json.loads((self.state/'retry.json').read_text())
+        self.assertTrue(set(r['id'] for r in newer)<=set(retry['deferred_initial']))
+        self.assertEqual(self.db.execute("select head_id from scan_frontiers where source='live'").fetchone()[0],newer[0]['id'])
 
     def test_pre_window_and_unknown_approvals_require_manual_command(self):
         self.full[DAILY]['release_date'] = '20261025'

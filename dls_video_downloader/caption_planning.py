@@ -39,17 +39,20 @@ def evaluate(history, *, now, completed_at, cooldown_until=None, mode='forward')
     anchor=instant(completed_at)
     if anchor>now: return finish('completion_observation_in_future',suspended=True)
     rows=sorted(history,key=lambda h:instant(h['finished_at']))
+    # A shared media/discovery lock collision is scheduling deferral, not a
+    # completed caption observation and must not consume a retry checkpoint.
+    policy_rows=[r for r in rows if not r.get('busy_deferred')]
     failures=0
-    for row in reversed(rows):
+    for row in reversed(policy_rows):
         if not row.get('technical_failure'):break
         failures+=1
-    if rows and rows[-1].get('ambiguities'):return finish('ambiguous_track_identity_requires_review',phase='review',suspended=True)
+    if policy_rows and policy_rows[-1].get('ambiguities'):return finish('ambiguous_track_identity_requires_review',phase='review',suspended=True)
     if failures>=5:return finish('five_consecutive_technical_failures',phase='review',suspended=True)
-    if any(not r.get('technical_failure') and not r.get('complete') and r.get('purpose') in ('initial','refresh') and instant(r['started_at'])>=anchor+MISSING[-1] for r in rows):
+    if any(not r.get('technical_failure') and not r.get('complete') and r.get('purpose') in ('initial','refresh') and instant(r['started_at'])>=anchor+MISSING[-1] for r in policy_rows):
         return finish('missing_caption_monitoring_ended_manual_refresh_available',phase='complete',complete=True)
-    first=next((instant(r['finished_at']) for r in rows if r.get('complete')),None)
+    first=next((instant(r['finished_at']) for r in policy_rows if r.get('complete')),None)
     if first is not None:
-        checks=[r for r in rows if r.get('purpose','').startswith('confirmation') and not r.get('technical_failure')]
+        checks=[r for r in policy_rows if r.get('purpose','').startswith('confirmation') and not r.get('technical_failure')]
         if any(instant(r['started_at'])>=first+timedelta(days=7) for r in checks):
             return finish('confirmation_monitoring_complete',phase='complete',complete=True)
         checked_day1=any(instant(r['started_at'])>=first+timedelta(days=1) for r in checks)
@@ -58,10 +61,10 @@ def evaluate(history, *, now, completed_at, cooldown_until=None, mode='forward')
         due_at=first+timedelta(days=day)
         purpose='confirmation_7d' if day==7 else 'confirmation_24h'
         phase='confirmation'
-    elif not rows:
+    elif not policy_rows:
         due_at=anchor; purpose='initial';phase='missing'
     else:
-        successful=[r for r in rows if not r.get('technical_failure')]
+        successful=[r for r in policy_rows if not r.get('technical_failure')]
         last=instant(successful[-1]['started_at']) if successful else None
         future=[anchor+offset for offset in MISSING if last is None or anchor+offset>last]
         if last is not None and not future:
@@ -69,9 +72,9 @@ def evaluate(history, *, now, completed_at, cooldown_until=None, mode='forward')
         due_at=future[0] if last else anchor
         purpose='refresh';phase='missing'
     if failures:
-        retry=instant(rows[-1]['finished_at'])+timedelta(hours=(1 if failures==1 else 6 if failures==2 else 24))
+        retry=instant(policy_rows[-1]['finished_at'])+timedelta(hours=(1 if failures==1 else 6 if failures==2 else 24))
         # Retry the unsuccessful operation, rather than consume a new checkpoint.
-        due_at=retry;purpose=rows[-1]['purpose'];phase='retry'
+        due_at=retry;purpose=policy_rows[-1]['purpose'];phase='retry'
     return finish('due' if due_at<=now else 'scheduled',due_at,phase,purpose)
 
 

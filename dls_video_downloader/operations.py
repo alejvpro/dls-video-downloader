@@ -205,7 +205,8 @@ def run_record(db, state, result):
     result['started_at'] = started
     try:
         yield
-        result['status'] = 'deferred' if result.get('shared_block') else 'partial_failure' if result['failures'] else 'success'
+        incomplete_coverage=result.get('coverage_summary',{}).get('complete') is False
+        result['status'] = 'deferred' if result.get('shared_block') else 'partial_failure' if result['failures'] or incomplete_coverage else 'success'
     except KeyboardInterrupt:
         result['status'] = 'interrupted'
         raise
@@ -222,7 +223,9 @@ def run_record(db, state, result):
         directory = state / 'runs' / result['run_id']
         (directory / 'summary.json').write_text(encoded(result))
         # Compact database history; detailed per-item evidence stays in bounded logs.
-        summary = {k: result.get(k) for k in ['encountered', 'new_ids', 'acquired', 'failures', 'download_attempts', 'warnings']}
+        summary = {k: result.get(k) for k in ['trigger','encountered','new_ids','acquired','failures',
+            'download_attempts','warnings','coverage','coverage_summary','enrichment_work','enrichment_status',
+            'retry_deferred']}
         with db:
             db.execute("UPDATE runner_runs SET finished_at=?,status=?,summary=? WHERE run_id=?",
                        (result['finished_at'], result['status'], encoded(summary), result['run_id']))

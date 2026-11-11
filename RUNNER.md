@@ -1,7 +1,8 @@
-> Current safety status: all six DLS cron commands remain commented out. Shared
-> YouTube admission/recovery is implemented offline; no recovery or cron
-> restoration has been run. Historical activation schedules below are not active.
-> See [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md) for state, inspection and recovery.
+> **Current operational status (November 10, 2026):** all six YouTube acquisition
+> and supplemental cron entries remain paused. The independent Pushover
+> dispatcher remains active every 15 minutes. Shared YouTube safety is normal;
+> no production safety migration is part of this readiness change. The proposed
+> configuration below is not installed. See [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md).
 
 ## Forward collection observability (implementation; schedule not installed)
 
@@ -42,27 +43,66 @@ pruned; asset and database history is untouched.
 - 7:30 PM: due supplemental comments and captions, without discovery.
 - Independent Pushover dispatcher: every 15 minutes.
 
-Proposed invocation forms (not installed):
+Proposed bounded invocation forms (not installed):
 
 ```sh
 python3 -B -m dls_video_downloader discover-morning --streams-limit 10 --videos-limit 10 --max-metadata-requests 20 --runtime-seconds 180 --scheduled --json
-python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 2 --max-comments 1000 --max-caption-videos 1 --runtime-seconds 600 --comment-seconds 420 --caption-seconds 180 --json
-python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --quiet
+python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 10 --max-comments 1000 --max-caption-videos 10 --runtime-seconds 1500 --comment-seconds 900 --caption-seconds 600 --json
+python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --start-date 2026-10-26 --scheduled --quiet
 ```
 
-The supplemental cycle's 600-second ceiling would end the 10:30 run by 10:40,
-20 minutes before the proposed 11 AM acquisition. The 7:30 PM cycle uses the
-same command and limits, without discovery. Proposed acquisition limits preserve
-the existing listing/enrichment caps while reducing media acquisitions to one.
+The proposed normal supplemental ceilings are ten due comment videos and ten due
+caption videos per invocation. These are operational safety ceilings, not claimed
+YouTube limits. Ordinary daily volume is expected to be approximately one new
+Daily Show, plus scheduled confirmations; Friday may add a Club. Two windows with
+ten-item ceilings per asset provide 20 work slots/day for initial work, due
+confirmations and bounded retries. The current 12-comment/13-caption due backlog
+can span both windows without forcing repeated work on items that are not due.
+Comments are oldest-due-first, so a prolonged backlog can still delay the newest
+show; check remaining due counts and first scheduled attempts after activation.
 
-All six YouTube collection cron entries remain paused. The 180-second morning
-discovery ceiling is unchanged. Comment/caption backlogs are oldest-due-first and
-can delay new-show initial attempts; caption capacity should be reviewed after
-normal arrivals. Acquisition runs serialize with each other. Supplemental work
-probes but does not hold the acquisition lock, leaving a cross-workflow start
-race. No priorities, catch-up, locking, budgets or runtime behavior changed here.
-Forward discovery must recover missed videos after multi-day outages within the
-fixed authorized forward boundary, separately from historical backfill.
+At 10:30, the 900-second comment and 600-second caption phase ceilings fit the
+1,500-second overall deadline and leave five minutes before the 11:00 acquisition
+slot. The 7:30 PM cycle uses the same limits and ends by 7:55, well before 9 PM.
+Every comment video remains capped at 1,000 comments; each extractor subprocess
+retains its existing timeout and zero-retry behavior. Caption collection remains
+limited to four original-English tracks, two formats per track and its existing
+byte bound; each video has at most 300 seconds and the phase at most 600 seconds.
+The 180-second caption default was too restrictive for a multi-item cycle; this
+proposal raises only bounded runtime/candidate ceilings and does not change due
+eligibility or create extra attempts.
+
+Proposed cron block (not installed; retain the separately active 15-minute
+Pushover dispatcher unchanged):
+
+```cron
+25 9 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader discover-morning --streams-limit 10 --videos-limit 10 --max-metadata-requests 20 --runtime-seconds 180 --start-date 2026-10-26 --scheduled --json > state/scheduled/morning.json 2>&1
+30 10 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 10 --max-comments 1000 --max-caption-videos 10 --runtime-seconds 1500 --comment-seconds 900 --caption-seconds 600 --start-date 2026-10-26 --json > state/scheduled/supplemental-primary.json 2>&1
+0 11,14,18,21 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --start-date 2026-10-26 --scheduled --quiet > state/scheduled/acquisition.json 2>&1
+30 19 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 10 --max-comments 1000 --max-caption-videos 10 --runtime-seconds 1500 --comment-seconds 900 --caption-seconds 600 --start-date 2026-10-26 --json > state/scheduled/supplemental-evening.json 2>&1
+```
+
+`--scheduled` explicitly records provenance; command names do not imply schedule.
+The 9:25 discovery ceiling remains 180 seconds and has a 20/20 listing and
+metadata cap. Acquisition runs preserve the 25/75 listing and eight-enrichment
+caps while allowing one media acquisition. An acquisition download subprocess
+can take up to two hours; the shared lock makes a colliding later run defer
+without requests. Do not enlarge these limits during initial rollout.
+
+Current backlog at the start of this readiness work: 11 initial metadata
+candidates (nine deferred, two failed), 12 due comment tasks and 13 due caption
+tasks. No confirmed eligible forward media is currently missing; recent discovery
+coverage remains incomplete because both listing caps were reached. Oldest-due
+ordering remains unchanged. The two daily supplemental windows provide ten slots
+per asset type each; unusually large outage backlogs can still span multiple
+windows. Review due counts and first-scheduled attempts after startup.
+
+The shared acquisition lock now closes the former supplemental probe/start race.
+Regular discovery keeps its normal shallow listing and persists one bounded
+200-entry recovery cursor per tab when the prior frontier falls outside the head.
+It reconciles to that frontier before advancing; cap-before-frontier stays
+incomplete and resumes next invocation. This recovery remains within the fixed
+October 26 forward authorization, separately from historical backfill.
 
 A late or uncompleted show remains ineligible until metadata verifies completion;
 the 10:30 window does not guarantee that captions or an expanded guide are ready.
@@ -272,7 +312,8 @@ python3 -B -m dls_video_downloader discover-morning --json
 `--store-root PATH` selects the separate comment store. None of these commands
 starts or waits for media acquisition. The established video `run` and `discover`
 commands, their `--max-enrich` option, cleanup, retries and cron are unchanged.
-The supplemental schedule below is installed. The corrected forward path passed
+At the earlier November 5 checkpoint, the supplemental schedule below was
+installed and the corrected forward path passed
 383 offline tests and one supervised live cycle; unattended success is not yet
 verified.
 
@@ -337,12 +378,12 @@ requests** protects abnormal workloads, separately from the one/two listing call
 `--max-metadata-requests` accepts 1–100; it is not intended as a routine small quota.
 `--max-enrich` is removed from supplemental commands, but remains on video commands.
 
-The cycle defaults to one shared 600-second network deadline, metadata cap 180,
-comments cap 600 reduced to remaining time, two comment videos and 1,000 comments
-per video. Options remain `--runtime-seconds` (30–600), `--discovery-seconds`
-(30–180), `--comment-seconds` (30–600), `--max-videos` (1–10),
-`--max-comments` (1–1,000), and `--start-date`. Standalone metadata runtime accepts
-30–180 seconds. Components receive absolute deadlines so allowances cannot reset.
+The current implementation supports a 1,500-second cycle ceiling, a 900-second
+comment phase, a 900-second caption phase, up to ten work items per asset type,
+and 1,000 comments per video. The proposed cron uses 900 seconds for comments
+and 600 for captions within the 1,500-second total. Discovery remains capped at
+180 seconds and 20 metadata attempts in the proposed morning command. Components
+receive absolute deadlines so phase allowances cannot reset.
 Local bounded SQLite waits, persistence and process cleanup can finish afterward;
 network work cannot start without sufficient allowance.
 
@@ -378,13 +419,19 @@ A successful comment phase does not turn failed discovery into success, and comm
 failure does not invalidate imported metadata. Operational success does not mean
 exhaustive comment retrieval; all existing coverage/confirmation semantics remain.
 
-Execution takes `state/supplemental/.cycle.lock` nonblockingly. Discovery uses the
-existing shared inventory/media operation lock; comments retain their own locks.
-The media lock is released between phases and never held throughout comment
-retrieval. Active acquisition defers without waiting for an MKV. Morning discovery
-retains its runtime+60-second guard before known 11/14/18/21 Pacific cron firings,
-and 60 seconds afterward. The comment acquisition probe still cannot exclude
-acquisition beginning after the probe. No video lock semantics or cron changed.
+Execution takes `state/supplemental/.cycle.lock` nonblockingly. The common
+`state/acquisitions/.acquisition.lock` serializes discovery, acquisition, format
+inspection, direct download, and each actual comment/caption network subprocess.
+Comment/caption child processes inherit the lock descriptor, so parent
+interruption cannot release exclusion while a child continues. Lock order is
+cycle lock, asset runner lock, asset collector lock, then shared acquisition
+lock; no code path acquires these in reverse order. The shared lock is released
+between network requests and phases, not held during planning or local reporting.
+Existing `video_busy` probes are early courtesy checks; final admission is the
+atomic shared flock, closing the start race. Busy operations defer without
+waiting or contacting YouTube. Read-only plans/status and Pushover dispatch do
+not take this lock. Morning discovery retains its runtime+60-second guard before
+the 11/14/18/21 Pacific acquisition slots.
 
 Read-only planners use independent SQLite read transactions with one-second busy
 waits. Supplemental inventory writes also use one second; video connections retain
@@ -399,21 +446,22 @@ Metadata diagnostic slots are `enrich-0..99.stderr.log` at most, according to th
 emergency bound; used slots are replaced and unused slots may be older. These are
 latest operational reports, not archive manifests. Immutable source observations,
 comment snapshots and portable collection records remain authoritative. Planning
-creates none of these files. Captions can later be another named phase; no caption
-schema, collector, shared manifest or cross-project integration is implemented.
+creates none of these files. Caption collections keep their independent catalog,
+portable records and immutable format payloads; supplemental reporting reads those
+stores without migrating them.
 
 Cycle exit codes: 0 planning/success/ordinary safety deferral, 2 incomplete or failed
 phases, 75 supplemental overlap, 130 interruption, 1 setup/reporting failure. Phase
 results retain their own codes. Unchecked forward work cannot yield clean success.
 
-The installed unified-cycle jobs below replace the earlier proposed separate
-morning/comment timings. Confirmation eligibility is measured from collection
-completion, not schedule slots: the next scheduled cycle may run later than +24h,
-but never early or after the original cutoff. Archiver owns backup; Indexer owns
-interpretation.
+The archived November 5 cron block below was installed at that checkpoint and was
+later paused. It is not the current schedule or the proposal above. Confirmation
+eligibility is measured from collection completion, not schedule slots: a future
+cycle may run later than +24h, but never early or after the original cutoff.
+Archiver owns backup; Indexer owns interpretation.
 
 
-## Installed supplemental schedule — November 5, 2026
+## Historical supplemental schedule — November 5, 2026 (subsequently paused)
 
 The existing video cron remains exactly unchanged at 11/14/18/21 Pacific. The five
 entries below use only the unified cycle: discovery Friday 08:35 and weekdays
@@ -438,7 +486,7 @@ ends by 10:25, leaving 35 minutes before the 11 AM media job, plus ample margin 
 bounded local persistence/cleanup. Existing acquisition locks/cron guards still
 apply; an active long video acquisition causes deferral, not a wait for its MKV.
 
-Each invocation permits at most two comment videos, 1,000 comments each, one shared
+Each historical invocation permitted at most two comment videos, 1,000 comments each, one shared
 600-second network budget, 180 seconds of metadata, 10 Streams entries, no Videos
 tab scan and the emergency 20 full-metadata ceiling. Inventory-only lines do not
 invoke discovery despite retaining the same explicit limits. State, cooldowns,
@@ -492,13 +540,15 @@ supervised execution must explicitly add `--captions`; this milestone does not
 change any installed cron line. See [CAPTIONS.md](CAPTIONS.md) for commands, source
 identity, immutable formats, retry/confirmation rules and rollout boundaries.
 
-Caption defaults are one video, 180 seconds, two source formats, and the existing
-shared 600-second overall deadline. `--max-caption-videos` permits 1–2;
-`--caption-seconds` permits 30–300; `--caption-root` selects independent state.
-Comments run first without reserving time for captions. Remaining time, cooldowns,
-fresh eligibility and acquisition contention are rechecked before requests. All
-three phases retain independent outcomes and source histories. The media runner,
-its acquisition lock semantics and its cron commands remain unchanged.
+The proposed forward cycle evaluates up to ten due caption videos with a
+600-second phase allowance inside a 1,500-second total. Each video remains limited
+to 300 seconds, four original-English tracks and the existing per-format byte
+bound; time is rechecked before every listing or payload request. The standalone
+runner also defaults to a maximum of ten due videos and 900 seconds; its
+`--max-videos` bound is 1–10. The unified cycle uses its separate 600-second
+caption phase. Comments run first; no capacity is reserved by
+changing due eligibility. All phases retain independent outcomes and histories.
+Each caption network subprocess atomically holds the common acquisition lock.
 
 Inspect the existing supplemental latest report, the separate caption runner
 latest report, portable caption collection JSON, and read-only caption plans.

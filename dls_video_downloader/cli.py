@@ -77,9 +77,9 @@ def main(argv=None):
     runner.add_argument("--json", action="store_true")
     runner.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
     runner.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
-    runner.add_argument("--max-videos", type=int, default=2)
+    runner.add_argument("--max-videos", type=int, default=10)
     runner.add_argument("--max-comments", type=int, default=1000)
-    runner.add_argument("--runtime-seconds", type=int, default=600)
+    runner.add_argument("--runtime-seconds", type=int, default=900)
     runner.add_argument('--scheduled',action='store_true',help='Record scheduled invocation provenance')
     collect = comment_commands.add_parser("collect")
     collect.add_argument("id", type=comment_video_id)
@@ -93,10 +93,10 @@ def main(argv=None):
         command.add_argument('--store-root',type=Path,default=Path(__file__).resolve().parent.parent/'state/captions')
         command.add_argument('--json',action='store_true')
         if name=='collect':command.add_argument('id',type=comment_video_id)
-        if name!='plan':command.add_argument('--runtime-seconds',type=int,default=180)
+        if name!='plan':command.add_argument('--runtime-seconds',type=int,default=900)
         if name=='run':
             command.add_argument('--execute',action='store_true')
-            command.add_argument('--max-videos',type=int,default=1)
+            command.add_argument('--max-videos',type=int,default=10)
             command.add_argument('--scheduled',action='store_true',help='Record scheduled invocation provenance')
         if name!='collect':command.add_argument('--start-date',type=iso_date,default=DEFAULT_START)
     morning = commands.add_parser("discover-morning", help="Bounded metadata-only morning discovery/status; writes inventory")
@@ -112,18 +112,18 @@ def main(argv=None):
     cycle.add_argument('--scheduled',action='store_true',help='Record scheduled invocation provenance in new attempts')
     cycle.add_argument('--captions',action='store_true',help='Explicitly enable caption execution; requires --execute')
     cycle.add_argument('--caption-root',type=Path)
-    cycle.add_argument('--caption-seconds',type=int,default=180)
-    cycle.add_argument('--max-caption-videos',type=int,default=1)
+    cycle.add_argument('--caption-seconds',type=int,default=600)
+    cycle.add_argument('--max-caption-videos',type=int,default=10)
     cycle.add_argument("--discover", action="store_true", help="Also authorize metadata discovery; requires --execute")
     cycle.add_argument("--json", action="store_true")
     cycle.add_argument("--store-root", type=Path, default=Path(__file__).resolve().parent.parent / "state/comments")
-    cycle.add_argument("--runtime-seconds", type=int, default=600)
+    cycle.add_argument("--runtime-seconds", type=int, default=1500)
     cycle.add_argument("--discovery-seconds", type=int, default=180)
-    cycle.add_argument("--comment-seconds", type=int, default=600)
+    cycle.add_argument("--comment-seconds", type=int, default=900)
     cycle.add_argument("--streams-limit", type=int, default=10)
     cycle.add_argument("--videos-limit", type=int, default=0)
     cycle.add_argument("--max-metadata-requests", type=int, default=20, help="Emergency full-metadata safety bound")
-    cycle.add_argument("--max-videos", type=int, default=2)
+    cycle.add_argument("--max-videos", type=int, default=10)
     cycle.add_argument("--max-comments", type=int, default=1000)
     cycle.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
     importer = commands.add_parser("import", help="Import local JSON only")
@@ -152,6 +152,7 @@ def main(argv=None):
         command.add_argument("--quiet", action="store_true", help="Only report errors; detailed records remain in state/runs")
         command.add_argument("--start-date", type=iso_date, default=DEFAULT_START)
         command.add_argument("--only-id", help="Supervised acquisition restriction; never changes discovery rules")
+        command.add_argument('--scheduled',action='store_true',help='Record this invocation as scheduled in run history')
     cleanup = commands.add_parser("cleanup", help="Inspect stale staging cleanup; dry-run unless --execute")
     cleanup.add_argument("--execute", action="store_true")
     cleanup.add_argument("--stale-hours", type=int, default=72)
@@ -252,7 +253,8 @@ def main(argv=None):
         except Blocked as exc:print(str(exc),file=sys.stderr);return 75
     if args.command == 'captions':
         from . import caption_planning, caption_collection, caption_runner
-        from .comment_collection import safe_diagnostic
+        from .comment_collection import safe_diagnostic, CommentBusy
+        from .comment_runner import Deferred
         try:
             if args.caption_command=='plan':
                 result=caption_planning.plan(args.db,args.store_root,now=datetime.now(timezone.utc),start=args.start_date,
@@ -266,19 +268,24 @@ def main(argv=None):
             else:
                 # Manual collection is explicit, but still yields to acquisition
                 # and shared blocking state before every network request.
-                from .comment_runner import video_busy, Deferred
+                from .comment_runner import video_busy
                 def preflight():
                     until=caption_runner.cooldown(args.db,args.store_root)
                     if until and until>datetime.now(timezone.utc):raise Deferred('collector_cooldown')
                     if video_busy(Path(args.db).resolve().parent/'acquisitions/.acquisition.lock'):raise Deferred('video_acquisition_active')
                 with safety.scope(Path(args.db).resolve().parent,'manual-captions'):
-                    result=caption_collection.collect(args.id,root=args.store_root,timeout=args.runtime_seconds,before_collect=preflight)
+                    result=caption_collection.collect(args.id,root=args.store_root,timeout=args.runtime_seconds,before_collect=preflight,
+                        operation_root=Path(args.db).resolve().parent/'acquisitions')
                 renderer=lambda value: f"{value['video_id']} | {value['outcome']} | {value['collection_record']}"
             print(json.dumps(result,ensure_ascii=False,indent=2) if args.json else renderer(result))
             return result.get('exit_code',0)
         except KeyboardInterrupt:return 130
         except safety.Blocked as exc:
             print(str(exc),file=sys.stderr);return 75
+        except CommentBusy as exc:
+            print(safe_diagnostic(exc),file=sys.stderr);return 75
+        except Deferred as exc:
+            print(safe_diagnostic(exc),file=sys.stderr);return 75
         except Exception as exc:
             print('Caption operation failed: '+safe_diagnostic(exc),file=sys.stderr);return 1
     if args.command == "cycle":
@@ -331,6 +338,7 @@ def main(argv=None):
         try:
             result = run(args.db, args.store_root, execute=args.execute, max_videos=args.max_videos,
                          max_comments=args.max_comments, runtime_seconds=args.runtime_seconds, start=args.start_date,
+                         acquisition_lock=Path(args.db).resolve().parent/'acquisitions/.acquisition.lock',
                          invocation_source='scheduled' if args.scheduled else 'manual')
             print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render(result))
             return result["exit_code"]
@@ -362,7 +370,7 @@ def main(argv=None):
         try:
             with safety.scope(Path(args.db).resolve().parent,'manual-comments'):
                 result = collect(args.id, root=args.store_root, max_comments=args.max_comments,
-                                 timeout=args.timeout_seconds)
+                                 timeout=args.timeout_seconds,operation_root=Path(args.db).resolve().parent/'acquisitions')
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return result["exit_code"]
         except CommentBusy as exc:
@@ -391,9 +399,17 @@ def main(argv=None):
                 metadata_state=forward_metadata.read_state(Path(args.db).resolve().parent)
                 enrichment=forward_metadata.enrichment_work(db,[],now=datetime.now(timezone.utc),start=args.start_date,
                     retained_pending=metadata_state['deferred_initial'])
+                acquired_ids={r[0] for r in db.execute('SELECT video_id FROM acquisitions')}
+                initial_pending=set(enrichment['initial_pending'])-acquired_ids
+                historical_deferred=set(metadata_state['deferred_initial'])
                 result['forward_enrichment']={k:enrichment[k] for k in ('pending_count','initial_pending','initial_completed','followup_required','resolved','unknown_date','listed_initial_pending')}
+                result['forward_enrichment']['initial_pending']=[v for v in enrichment['initial_pending'] if v not in acquired_ids]
+                result['forward_enrichment']['pending_count']=len(result['forward_enrichment']['initial_pending'])
                 result['forward_enrichment']['deferred_retry']=[r for r in result['runtime']['retry_delays'] if r.get('operation')=='enrichment']
-                result['forward_enrichment']['budget_deferred_ids']=sorted(metadata_state['deferred_initial'])
+                result['forward_enrichment']['budget_deferred_ids']=sorted(historical_deferred & initial_pending)
+                result['forward_enrichment']['historical_budget_deferred_ids']=sorted(historical_deferred)
+                result['forward_enrichment']['resolved_historical_deferred_ids']=sorted(historical_deferred-initial_pending)
+                result['forward_enrichment']['acquired_historical_deferred_ids']=sorted((historical_deferred-initial_pending)&acquired_ids)
                 latest=result['runtime']['recent_runs'][0] if result['runtime']['recent_runs'] else None
                 last_summary=latest['summary'] if latest else {}
                 result['forward_enrichment']['new_ids_last_run']=last_summary.get('new_ids',[])
@@ -401,6 +417,8 @@ def main(argv=None):
                 result['forward_enrichment']['budget_deferred_last_run']=last_work.get('deferred_this_run',[])
                 result['forward_enrichment']['date_scope']=args.start_date
                 result['forward_enrichment']['last_listing_coverage']=last_summary.get('coverage',{})
+                result['forward_enrichment']['last_coverage_summary']=last_summary.get('coverage_summary',{})
+                result['forward_enrichment']['last_retry_deferred']=last_summary.get('retry_deferred',[])
                 result['forward_enrichment']['plan_performed_discovery']=False
                 if args.json:
                     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -428,7 +446,8 @@ def main(argv=None):
                                       streams_limit=args.streams_limit, videos_limit=args.videos_limit,
                                       max_enrich=args.max_enrich, max_downloads=args.max_downloads,
                                       start=args.start_date, only_id=args.only_id, stale_hours=args.stale_hours,
-                                      retry_base_minutes=args.retry_base_minutes, retry_max_hours=args.retry_max_hours)
+                                      retry_base_minutes=args.retry_base_minutes, retry_max_hours=args.retry_max_hours,
+                                      invocation_source='scheduled' if args.scheduled else 'manual')
                 if not args.quiet:
                     print(json.dumps(result, indent=2))
                 if result.get('shared_block'):return 75
@@ -436,6 +455,10 @@ def main(argv=None):
                     if args.quiet:
                         print(f"{result['finished_at']} partial_failure: {len(result['failures'])} failures; {result['log']}", file=sys.stderr)
                     return 2
+                if result.get('exit_code'):
+                    if args.quiet:
+                        print(f"{result['finished_at']} incomplete_forward_coverage; {result['log']}",file=sys.stderr)
+                    return result['exit_code']
             elif args.command == 'cleanup':
                 from .acquisition import PROJECT, operation_lock
                 with operation_lock(PROJECT / 'state/acquisitions'):

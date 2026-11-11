@@ -61,7 +61,8 @@ def discover(inventory_path, *, streams_limit=10, videos_limit=0, max_metadata_r
               'next_video_run': slot.isoformat(), 'new_ids': [], 'encountered': {},
               'enriched': [], 'deferred': [], 'failures': [], 'warnings': [], 'status': {},
               'exit_code': 0, 'stop_reason': None, 'status_checks': {},
-              'forward_coverage': {'complete':False,'scope':'not_started'}}
+              'forward_coverage': {'complete':False,'scope':'not_started'},
+              'listing_status':{'live':'not_started','videos':'not_started'}}
     guard_slot = next_video_run(now - timedelta(seconds=60))
     if (guard_slot - now).total_seconds() <= runtime_seconds + 60:
         result['stop_reason'] = 'video_cron_imminent'
@@ -164,9 +165,13 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
 
     try:
         for source, tab, limit in (('live', 'streams', streams), ('videos', 'videos', videos)):
-            if not limit or result['stop_reason']:
+            if not limit:
+                result['listing_status'][source]='not_requested'
+                continue
+            if result['stop_reason']:
                 continue
             try:
+                result['listing_status'][source]='attempted'
                 document = extract(['--flat-playlist', '--playlist-end', str(limit),
                                     f'https://www.youtube.com/channel/{CHANNEL}/{tab}'], f'{source}.stderr.log')
                 if document is None:
@@ -187,11 +192,13 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
                 with db:
                     import_document(db, local, source, f'morning:channel:{CHANNEL}/{tab}', source_alias=f'morning:{source}')
                 result['encountered'][source] = len(entries)
+                result['listing_status'][source]='succeeded'
                 if len(entries) == limit:
                     result['warnings'].append(f'{source}: bounded head reached {limit}; not exhaustive discovery')
                 for position, entry in enumerate(entries):
                     positions[entry['id']] = min(position, positions.get(entry['id'], limit))
             except (ValueError, OSError) as exc:
+                result['listing_status'][source]='failed'
                 failure(source, exc)
         result['new_ids'] = sorted(set(positions) - before)
         scope = forward.candidates(db, positions, listed_status, now=clock(), start=start)
@@ -283,9 +290,20 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
         requested = {'live'} | ({'videos'} if videos else set())
         pending = result.get('forward_scope',{}).get('pending',[])
         unattempted = sorted(set(pending)-set(result['attempted']))
+        result['tab_coverage']={}
+        for report_name, source, limit in (('streams','live',streams),('videos','videos',videos)):
+            status=result.get('listing_status',{}).get(source,'not_started')
+            count=result.get('encountered',{}).get(source,0)
+            cap_hit=bool(limit and status=='succeeded' and count>=limit)
+            result['tab_coverage'][report_name]={'status':status,'requested_limit':limit,
+                'listing_attempted':status in ('attempted','succeeded','failed'),
+                'entries_observed':count,'cap_hit':cap_hit,
+                'complete':None if not limit else status=='succeeded' and not cap_hit}
+        listing_complete=all(result['tab_coverage'][n]['complete'] is True for n in ('streams','videos') if result['tab_coverage'][n]['requested_limit'])
         result['forward_coverage'] = {
-            'complete': requested <= set(result['encountered']) and not result['failures']
+            'complete': listing_complete and requested <= set(result['encountered']) and not result['failures']
                         and not unattempted and not result['stop_reason'],
+            'listing_complete':listing_complete,
             'candidate_count': len(pending), 'attempted_count': len(result['attempted']),
             'initial_pending_count':len(result.get('enrichment_work',{}).get('initial_pending',[])),
             'followup_required_count':len(result.get('enrichment_work',{}).get('followup_required',[])),
@@ -293,11 +311,6 @@ def _discover(db, state, result, start, clock, monotonic, streams, videos, maxim
             'unattempted_ids': unattempted,
             'failed_ids': [f['id'] for f in result['failures'] if f['id'] is not None],
             'scope': 'bounded_heads_and_recent_source_evidence'}
-        result['tab_coverage']={name:{'requested_limit':limit,'attempted':any(a['kind']=='channel_listing' and a['scope']==name for a in result.get('operation_attempts',[])),
-            'entries_observed':result.get('encountered',{}).get(name,0),'cap_hit':bool(limit and result.get('encountered',{}).get(name,0)>=limit),
-            'complete':name in result.get('encountered',{}) and result.get('exit_code')==0 and
-                        result.get('encountered',{}).get(name,0)<limit}
-            for name,limit in (('streams',streams),('videos',videos))}
         if not result['forward_coverage']['complete'] and result['exit_code']==0:
             result['exit_code']=2
         result['finished_at'] = clock().isoformat()
