@@ -62,8 +62,20 @@ def failure_category(error):
         return "verification"
     if any(s in text for s in ("398", "formats", "format is not available")):
         return "formats"
-    if any(s in text for s in ("private video", "removed", "unavailable", "not available", "members-only", "sign in", "403")):
+    # A bare media HTTP 403 is ambiguous (for example, an expired or
+    # temporarily rejected media URL). Keep explicit access/unavailability
+    # evidence on the existing long retry, but back off ambiguous 403s on a
+    # bounded 6h / 12h / 24h schedule.
+    if any(s in text for s in ("private video", "video is private", "video unavailable",
+                               "removed", "video has been removed", "removed by the uploader",
+                               "members-only", "members only", "sign in to confirm",
+                               "sign in", "access denied", "not available in your country",
+                               "video is restricted", "age-restricted", "geo-restricted")):
         return "unavailable"
+    if any(s in text for s in ("unavailable", "not available")):
+        return "unavailable"
+    if re.search(r"\b403\b", text):
+        return "ambiguous_http_403"
     if any(s in text for s in ("storage", "space", "disk full")):
         return "storage"
     return "transient"
@@ -74,7 +86,12 @@ def retry_failure(db, video_id, operation, error, *, clock=None, base_minutes=60
     previous = db.execute("SELECT failures FROM retry_state WHERE video_id=? AND operation=?", (video_id, operation)).fetchone()
     count = (previous[0] if previous else 0) + 1
     category = failure_category(error)
+    # The shorter 403 policy is specifically for media acquisition. Preserve
+    # the existing conservative delay for any other operation that reports it.
+    if category == "ambiguous_http_403" and operation != "acquisition":
+        category = "unavailable"
     minimum = {"transient": base_minutes, "interrupted": base_minutes,
+               "ambiguous_http_403": 360,
                "formats": 360, "storage": 360, "unavailable": 1440, "verification": 1440}[category]
     delay = min(max_hours * 60, minimum * 2 ** min(count - 1, 10))
     row = (video_id, operation, count, category, safe_text(error)[:1000] or type(error).__name__,

@@ -1,10 +1,10 @@
-> **Current operational status (November 10, 2026):** all six YouTube acquisition
-> and supplemental cron entries remain paused. The independent Pushover
-> dispatcher remains active every 15 minutes. Shared YouTube safety is normal;
-> no production safety migration is part of this readiness change. The proposed
-> configuration below is not installed. See [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md).
+> **Current operational status (November 11, 2026):** Stage 1 forward discovery
+> and media acquisition are active. The installed acquisition schedule currently
+> allows one media download per invocation. Comment/caption collection remains
+> paused. The independent Pushover dispatcher is active every 15 minutes.
+> Historical backfill is not installed. See [YOUTUBE-SAFETY.md](YOUTUBE-SAFETY.md).
 
-## Forward collection observability (implementation; schedule not installed)
+## Forward operations and collection observability
 
 Read-only cohort report:
 
@@ -34,21 +34,35 @@ under `state/morning/history/`. Retention is at most 120 newest receipts and 45
 days, whichever limit is reached first. Only operational diagnostic receipts are
 pruned; asset and database history is untouched.
 
-### Proposed schedule (not installed or authorized)
+### Installed Stage 1 schedule
 
-- 9:25 AM Pacific: metadata-only discovery of both Streams and Videos tabs.
-- 10:30 AM: supplemental comments plus captions, without discovery.
-- 11 AM, 2 PM, 6 PM, 9 PM: independent acquisition opportunities; one acquisition
-  per run is the audit proposal.
-- 7:30 PM: due supplemental comments and captions, without discovery.
-- Independent Pushover dispatcher: every 15 minutes.
+- 9:25 AM Pacific daily: bounded metadata-only discovery, Streams and Videos
+  limits 10 each, metadata limit 20, 180-second runtime, forward start
+  `2026-10-26`, explicit `--scheduled` provenance.
+- 11 AM, 2 PM, 6 PM and 9 PM Pacific daily: acquisition runner, Streams limit
+  25, Videos limit 75, up to eight enrichments, `--max-downloads 1`, forward
+  start `2026-10-26`, explicit `--scheduled` provenance.
+- The independent Pushover dispatcher runs every 15 minutes.
+- Supplemental collection and historical backfill are not active.
 
-Proposed bounded invocation forms (not installed):
+The installed acquisition limit of one is explicit. The intended future normal
+limit is up to two eligible videos per scheduled invocation, after a separate
+supervised cron update. Manual forward catch-up is optional acceleration, not a
+prerequisite for bounded outage recovery. An operator may explicitly use
+`--max-downloads 3` for supervised catch-up. Both remain subject to the fixed
+forward date, shared safety, retry deadlines, and shared operation lock. A
+download subprocess may run for up to two hours; later runs safely defer when
+that lock is occupied. Historical work is a separate future workflow, initially
+intended at approximately one acquisition per day.
+
+### Supplemental schedule (paused; proposed for a later stage)
+
+The agreed future windows remain 10:30 AM and 7:30 PM Pacific. They are not
+installed. The following limits are proposed safety ceilings, not claims about
+YouTube limits:
 
 ```sh
-python3 -B -m dls_video_downloader discover-morning --streams-limit 10 --videos-limit 10 --max-metadata-requests 20 --runtime-seconds 180 --scheduled --json
 python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 10 --max-comments 1000 --max-caption-videos 10 --runtime-seconds 1500 --comment-seconds 900 --caption-seconds 600 --json
-python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --start-date 2026-10-26 --scheduled --quiet
 ```
 
 The proposed normal supplemental ceilings are ten due comment videos and ten due
@@ -72,24 +86,12 @@ The 180-second caption default was too restrictive for a multi-item cycle; this
 proposal raises only bounded runtime/candidate ceilings and does not change due
 eligibility or create extra attempts.
 
-Proposed cron block (not installed; retain the separately active 15-minute
-Pushover dispatcher unchanged):
+The read-only plan is `cycle --json`; adding `--execute` authorizes work. Do not
+infer scheduled provenance from the command name: scheduled invocations pass
+`--scheduled` explicitly. See [COMMENTS.md](COMMENTS.md) and
+[CAPTIONS.md](CAPTIONS.md) for collection policies and retry behavior.
 
-```cron
-25 9 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader discover-morning --streams-limit 10 --videos-limit 10 --max-metadata-requests 20 --runtime-seconds 180 --start-date 2026-10-26 --scheduled --json > state/scheduled/morning.json 2>&1
-30 10 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 10 --max-comments 1000 --max-caption-videos 10 --runtime-seconds 1500 --comment-seconds 900 --caption-seconds 600 --start-date 2026-10-26 --json > state/scheduled/supplemental-primary.json 2>&1
-0 11,14,18,21 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --start-date 2026-10-26 --scheduled --quiet > state/scheduled/acquisition.json 2>&1
-30 19 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader cycle --execute --captions --scheduled --max-videos 10 --max-comments 1000 --max-caption-videos 10 --runtime-seconds 1500 --comment-seconds 900 --caption-seconds 600 --start-date 2026-10-26 --json > state/scheduled/supplemental-evening.json 2>&1
-```
-
-`--scheduled` explicitly records provenance; command names do not imply schedule.
-The 9:25 discovery ceiling remains 180 seconds and has a 20/20 listing and
-metadata cap. Acquisition runs preserve the 25/75 listing and eight-enrichment
-caps while allowing one media acquisition. An acquisition download subprocess
-can take up to two hours; the shared lock makes a colliding later run defer
-without requests. Do not enlarge these limits during initial rollout.
-
-Current backlog at the start of this readiness work: 11 initial metadata
+Historical backlog snapshot at the start of readiness work: 11 initial metadata
 candidates (nine deferred, two failed), 12 due comment tasks and 13 due caption
 tasks. No confirmed eligible forward media is currently missing; recent discovery
 coverage remains incomplete because both listing caps were reached. Oldest-due
@@ -119,15 +121,32 @@ failures/incomplete assets remain retryable. Future Archiver and Indexer consume
 must discover assets/revisions by stable video and asset identity, including gaps
 inside covered date ranges, not by date high-water marks.
 
-# Scheduled forward acquisition runner
+# Forward acquisition runner
 
-Cron was activated on October 29, 2026 at 1:01 a.m. Pacific with one labeled entry and four daily checks. Use the same command for a manual run:
+The installed Stage 1 schedule has one metadata-only discovery entry and one
+acquisition entry covering four daily times. Its `--max-downloads 1` setting is
+explicit; supplemental commands are paused. For a manual run with the same
+single-acquisition ceiling:
 
 ```sh
-cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 2 --quiet
+cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --start-date 2026-10-26
 ```
 
-Replace `run` with `discover` for discovery-only. Quiet mode suppresses routine output, including acquisition progress, but reports failures to stderr. Structured evidence remains local. No video ID is needed; `--only-id` remains an optional supervised restriction. This schedule authorizes ordinary forward acquisition, not historical backfill.
+For an operator-initiated forward catch-up, the same bounded runner accepts
+`--max-downloads 3`. This is optional acceleration; normal forward discovery
+already resumes bounded outage recovery. Do not pass `--scheduled` for manual
+work. Quiet mode suppresses routine output but not failures to stderr. Structured
+evidence remains local. No video ID is needed; `--only-id` remains an optional
+supervised restriction. Forward acquisition is not historical backfill.
+
+```sh
+/opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 3 --start-date 2026-10-26
+```
+
+The approved intended normal scheduled ceiling is up to two eligible media
+acquisitions per invocation, but the installed cron remains at one until a
+separate supervised update. Historical backfill will use its own workflow and
+is initially intended to acquire approximately one historical video per day.
 
 ## Acquisition naming contract
 
@@ -137,7 +156,13 @@ The [acquisition naming contract](ACQUISITION-NAMING.md) intentionally keeps pat
 
 The runner requires a **verified release/upload date on or after 2026-10-26**, even for manually approved videos. Pre-window and undated approvals remain intact but cannot authorize unattended acquisition. The explicit `download VIDEO_ID` command still permits approved historical exceptions, subject to readiness, strict formats and retry delays. No individual ID is hardcoded into this policy. Content rules are unchanged; Skip and unresolved Review are excluded unless effectively approved, and approval cannot bypass the runner's date requirement.
 
-Defaults: **25 Live entries, 75 Videos entries, eight full enrichments, two acquisition attempts**. Limits are configurable: 1–200 entries per tab, 0–20 enrichments, 1–3 downloads. `--per-tab N` overrides both tab limits. Failed attempts consume download slots; remaining candidates are reported as deferred.
+The installed cron explicitly uses **25 Streams entries, 75 Videos entries,
+eight full enrichments, and one acquisition**. The runner accepts 1–3 downloads
+per invocation; the approved intended normal scheduled limit is two after a
+separate cron update, while manually initiated catch-up may use three. Failed
+attempts consume download slots; remaining candidates are reported as deferred.
+The future normal command changes only this one option to `--max-downloads 2`;
+it is not installed yet.
 
 Every newly listed forward ID without a retained full-metadata observation is now eligible for initial enrichment, including records that full metadata will classify Skip or Review. Manual Skip/Reject decisions remain excluded. The same observation-based selector is used by `discover-morning` and the regular `run` workflow. It uses retained Streams/Videos source sightings and full-vs-flat observation detail; it does not infer dates from titles or first-seen time. An ID with a full, reliably resolved status leaves initial enrichment and is not requested again solely because it reappears in a flat listing. Upcoming, live, post-live, incomplete, and specifically changed status records remain follow-up work under existing retry/backoff rules.
 
@@ -154,10 +179,28 @@ Schema 3 adds `retry_state`, `runner_runs`, `scan_frontiers`, and `cleanup_event
 | Category | Initial delay |
 | --- | --- |
 | Network/unknown transient; interruption | 60 minutes |
+| Ambiguous isolated media HTTP 403 | 6 hours; then 12 hours; then 24 hours |
 | Missing strict formats; insufficient storage | 6 hours |
 | Unavailable/private/restricted video; verification/recovery problem | 24 hours |
 
-Consecutive failures double the category delay, capped at 24 hours by default. Configure `--retry-base-minutes` and `--retry-max-hours` when necessary. Categories are conservative diagnostic heuristics. There is no retry loop within a run; a later invocation can retry when due. Success clears that operation's state. Enrichment success does not clear acquisition failures. Verified acquisitions are skipped and never redownloaded. Verification conflicts continue refusing replacement; waiting does not repair them.
+An ambiguous media HTTP 403 does not by itself prove that a video is private or
+removed. Its per-video delay is 6, 12, then 24 hours, capped at 24 hours.
+Explicit unavailability retains the longer 24-hour initial delay. Consecutive
+failures double the category delay, capped at 24 hours by default. Recognized
+authentication challenges and rate limits remain governed by the independent
+shared YouTube safety policy; this local retry change does not weaken it.
+Categories are conservative diagnostic heuristics. There is no retry loop within
+a run; a later invocation retries only when due. Existing retry deadlines are
+not rewritten when policy changes. Success clears that operation's state.
+Enrichment success does not clear acquisition failures. Verified acquisitions
+are skipped and never redownloaded. Status and run receipts expose repeated
+per-video retry records; Pushover is reserved for shared safety incidents, so
+generic repeated acquisition failures do not currently send a separate alert.
+The durable failure counter is per video and operation and is preserved across
+category changes. A pre-existing one-failure record therefore remains due at its
+stored deadline; if its next failed attempt is a 403, that is failure two and
+uses the 12-hour step. The policy does not reset or rewrite old retry history.
+Verification conflicts continue refusing replacement; waiting does not repair them.
 
 ## Safe staging retention
 
@@ -192,13 +235,20 @@ Status shows recent runs, verified acquisition count, forward pending IDs and re
 
 Unexpected programming/database errors propagate as fatal failures rather than creating transient item retries. Fatal diagnostics include exception type and stack file/line/function locations, without source lines or locals. They are sanitized and retained in the run's bounded `fatal.stderr.log`. Failures before run-log initialization remain visible on stderr and, when possible, overwrite the bounded `state/runner-fatal.log` fallback (at most 256 KiB). `--quiet` suppresses neither. Read-only status/report commands never write this fallback. Use these existing bounded logs plus cron's normal error delivery; do not append stderr indefinitely to a separate file. If local logging fails, stderr still reports the original error.
 
-## Installed cron schedule
+## Installed Stage 1 cron schedule
 
 ```cron
-0 11,14,18,21 * * * cd /Users/alejandroveloz/Sites/dls-video-downloader && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 2 --quiet
+25 9 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader discover-morning --streams-limit 10 --videos-limit 10 --max-metadata-requests 20 --runtime-seconds 180 --start-date 2026-10-26 --scheduled --json > state/scheduled/morning.json 2>&1
+0 11,14,18,21 * * * umask 077; cd /Users/alejandroveloz/Sites/dls-video-downloader && /bin/mkdir -p state/scheduled && /opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 1 --start-date 2026-10-26 --scheduled --quiet > state/scheduled/acquisition.json 2>&1
 ```
 
-The entry is enclosed by `# BEGIN dls-video-downloader (verified forward acquisition)` and `# END dls-video-downloader`. It was verified present exactly once, with all six previous jobs and every original crontab byte preserved. The confirmed system timezone is `America/Los_Angeles`: **11 a.m., 2 p.m., 6 p.m. and 9 p.m. Pacific**, including weekends for catch-up. No timezone environment line was added. A child `TZ` setting must not be assumed to change cron's schedule timezone. DST keeps these wall-clock hours; they are outside the early-morning missing/repeated hour. No existing task environment changed.
+The active Stage 1 entries are enclosed by the labeled DLS block. The confirmed
+system timezone is `America/Los_Angeles`: **9:25 a.m.** discovery and **11 a.m.,
+2 p.m., 6 p.m. and 9 p.m.** acquisition, daily including weekends. Supplemental
+collection remains paused; the Pushover dispatcher is a separate active entry
+every 15 minutes. No timezone environment line was added. A child `TZ` setting
+must not be assumed to change cron's schedule timezone. DST keeps these wall-clock
+hours; they are outside the early-morning missing/repeated hour.
 
 Read-only power checks: AC `sleep 0`, display sleep 10 minutes, standby off, automatic restart on, no scheduled sleep/wake events. Automatic system sleep is disabled; display sleep does not prevent execution. Keep the Mac on AC and connected. Manual sleep, shutdown, power or network loss can still miss runs. [Apple documents that cron does not replay asleep/off jobs until the next designated time](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/ScheduledJobs.html). Catch-up is provided by this runner's known backlog and subsequent bounded discovery. No power setting changed.
 
@@ -206,7 +256,14 @@ Read-only power checks: AC `sleep 0`, display sleep 10 minutes, standby off, aut
 
 Use the manual command at the top of this document, or `status` / `status --json` above to inspect recent success/failure, pending work and retry delays. Detailed per-run records are under `state/runs/`; fatal diagnostics are in the run directory or `state/runner-fatal.log`. Error delivery before Python starts still depends on cron's stderr/mail handling; verify a real scheduled firing and continue checking status. No indefinitely appended cron-output file is used.
 
-Friday October 30 is the first full unattended day. The daily livestream and The Club are selected/enriched independently. Incomplete live broadcasts are deferred. The late Club upload can be picked up at 6 p.m., 9 p.m., or a subsequent run; an upload after 9 p.m. is caught by the next day's 11 a.m. check. Missing strict AV1/Opus formats cause a visible retry delay, never a fallback. All automatic acquisition requires verified dates on or after October 26. Missed runs catch up through the inventory backlog and bounded channel scans; coverage gaps are reported rather than silently ignored. Keep the Mac on AC, awake and connected.
+Daily shows and Friday Club uploads are selected and enriched independently.
+Incomplete live broadcasts are deferred. Automatic acquisition requires verified
+dates on or after October 26. Missed runs recover through the forward backlog and
+bounded channel scans; normal discovery owns this recovery, while manual catch-up
+is optional. Coverage gaps are reported rather than silently ignored. Keep the
+Mac on AC, awake and connected. The AV1 720p30 video requirement remains strict;
+original-language Opus or AAC audio is selected under the documented
+language/DRC policy.
 
 To disable only this task, use `crontab -e` and remove only the labeled BEGIN/END block and its one DLS command. Preserve every other entry, comment and line. This does not delete acquired files or change inventory decisions. Confirm no active DLS entry remains before doing any manual recovery work.
 
@@ -565,18 +622,17 @@ AV1 and selected original-audio formats, manifests or local asset eligibility. A
 are not destructively interrupted. Expired cooldown requires a separately
 approved coordinated metadata probe, never automatic per-job probes.
 Read `youtube-safety status --json` and the immutable event journal; follow the
-[shared operational guide](YOUTUBE-SAFETY.md). Keep cron paused through review.
+[shared operational guide](YOUTUBE-SAFETY.md). The shared safety gate controls
+network admission independently of the installed Stage 1 schedule.
 
-## Explicit operational alert delivery (not scheduled)
+## Independent scheduled operational alert delivery
 
 The [DLS Pushover adapter](NOTIFICATIONS.md) consumes supported shared-safety
 journal events. `notifications plan/status/run` are read-only by default; delivery
-requires `--execute`. No media/supplemental runner invokes it automatically, and
-provider failures cannot block archival evidence. All six existing DLS jobs remain
-paused. Credentials are external/private and have not been accessed or provisioned
-by this milestone. One separately authorized connectivity test precedes rollout.
+requires `--execute`. The independent dispatcher is active every 15 minutes;
+provider failures cannot block archival evidence. Credentials are external/private.
 
 The first supervised Pushover connectivity test was accepted and independently
 confirmed on the iPhone. Private configuration is provisioned; checkpoint/status
-operations do not access credentials. No notification schedule or automatic
-incident delivery is enabled, and all six DLS cron entries remain paused.
+operations do not access credentials. Automatic incident delivery is enabled by
+the independent dispatcher; supplemental collection remains paused.

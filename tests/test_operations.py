@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from dls_video_downloader import acquisition as media
 from dls_video_downloader import operations as ops
+from dls_video_downloader import youtube_safety
 from dls_video_downloader.inventory import connect, import_document
 from dls_video_downloader.classification import CHANNEL
 
@@ -154,6 +155,73 @@ class OperationTests(unittest.TestCase):
             result = ops.retry_failure(self.db, ID, 'acquisition', ValueError('network timeout'), clock=self.clock)
         self.assertEqual(result['next_retry'], (self.clock+timedelta(hours=24)).isoformat())
         self.assertEqual(result['failures'], 20)
+
+    def test_ambiguous_http_403_uses_bounded_per_video_backoff(self):
+        at = self.clock
+        for failures, hours in ((1, 6), (2, 12), (3, 24), (4, 24)):
+            result = ops.retry_failure(
+                self.db, ID, 'acquisition', ValueError('HTTP Error 403: Forbidden'), clock=at)
+            self.assertEqual(result['category'], 'ambiguous_http_403')
+            self.assertEqual(result['failures'], failures)
+            self.assertEqual(result['next_retry'], (at + timedelta(hours=hours)).isoformat())
+            at += timedelta(hours=hours)
+
+    def test_explicit_video_unavailability_keeps_long_retry(self):
+        for message in ('This video is private', 'Video unavailable',
+                        'HTTP Error 403: This video is unavailable',
+                        'The video has been removed',
+                        'This video is not available in your country'):
+            with self.subTest(message=message):
+                result = ops.retry_failure(
+                    self.db, ID, 'acquisition', ValueError(message), clock=self.clock)
+                self.assertEqual(result['category'], 'unavailable')
+                self.assertEqual(result['next_retry'], (self.clock + timedelta(hours=24)).isoformat())
+
+    def test_ambiguous_403_outside_media_acquisition_keeps_existing_delay(self):
+        result = ops.retry_failure(
+            self.db, ID, 'enrichment', ValueError('HTTP Error 403: Forbidden'), clock=self.clock)
+        self.assertEqual(result['category'], 'unavailable')
+        self.assertEqual(result['next_retry'], (self.clock + timedelta(hours=24)).isoformat())
+
+    def test_existing_retry_deadline_is_read_without_reclassification(self):
+        existing = ops.retry_failure(
+            self.db, ID, 'acquisition', ValueError('This video is private'), clock=self.clock)
+        before = tuple(self.db.execute(
+            'SELECT failures,category,reason,last_failure,next_retry FROM retry_state WHERE video_id=? AND operation=?',
+            (ID, 'acquisition')).fetchone())
+        self.assertEqual(existing['category'], 'unavailable')
+        self.assertEqual(ops.retry_pending(
+            self.db, ID, 'acquisition', clock=self.clock + timedelta(hours=1))['next_retry'],
+            existing['next_retry'])
+        after = tuple(self.db.execute(
+            'SELECT failures,category,reason,last_failure,next_retry FROM retry_state WHERE video_id=? AND operation=?',
+            (ID, 'acquisition')).fetchone())
+        self.assertEqual(after, before)
+
+    def test_new_403_policy_keeps_prior_per_video_failure_count(self):
+        first = ops.retry_failure(
+            self.db, ID, 'acquisition', ValueError('This video is private'), clock=self.clock)
+        due = self.clock + timedelta(hours=24)
+        self.assertEqual(first['failures'], 1)
+        second = ops.retry_failure(
+            self.db, ID, 'acquisition', ValueError('HTTP Error 403: Forbidden'), clock=due)
+        self.assertEqual(second['category'], 'ambiguous_http_403')
+        self.assertEqual(second['failures'], 2)
+        self.assertEqual(second['next_retry'], (due + timedelta(hours=12)).isoformat())
+
+    def test_shared_auth_and_rate_limit_still_use_global_safety(self):
+        self.assertIsNone(youtube_safety.classify('HTTP Error 403: Forbidden'))
+        self.assertEqual(youtube_safety.classify('LOGIN_REQUIRED: sign in'), 'authentication_challenge')
+        self.assertEqual(youtube_safety.classify('HTTP Error 429: Too Many Requests'), 'rate_limit')
+
+    def test_success_still_clears_only_the_matching_retry(self):
+        ops.retry_failure(self.db, ID, 'acquisition', ValueError('HTTP 403 Forbidden'), clock=self.clock)
+        ops.retry_failure(self.db, ID, 'enrichment', ValueError('network timeout'), clock=self.clock)
+        ops.retry_success(self.db, ID, 'acquisition')
+        self.assertIsNone(self.db.execute(
+            'SELECT 1 FROM retry_state WHERE video_id=? AND operation=?', (ID, 'acquisition')).fetchone())
+        self.assertIsNotNone(self.db.execute(
+            'SELECT 1 FROM retry_state WHERE video_id=? AND operation=?', (ID, 'enrichment')).fetchone())
 
     def test_diagnostics_are_bounded_and_sanitized(self):
         path = self.state/'tool.log'

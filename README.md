@@ -1,12 +1,35 @@
 # DLS Video Downloader
 
-This project preserves selected official Dan Le Batard Show YouTube videos and independent comment and caption assets. YouTube video IDs are stable identities; titles and dates are evidence, not identifiers. Forward discovery/enrichment, bounded acquisition, comments, original-English captions, shared YouTube safety, and Pushover notification delivery are implemented. **The six YouTube acquisition/supplemental cron entries are currently paused** pending a schedule/request-budget audit and supervised restoration; the separate 15-minute notification dispatcher remains active. Historical backfill and Archiver/Indexer integrations are not implemented. See [runner usage and operational limits](RUNNER.md).
+The DLS Video Downloader preserves selected official show videos and their comment and original-caption records. Stable YouTube IDs identify videos; titles and dates are evidence, not identifiers.
 
-One manually invoked metadata-only validation enriched the October 26–28 daily shows. See [validation findings](METADATA-VALIDATION.md) for formats, runtime warnings, and verification. The acquisition and bounded discovery workflows are documented below.
+## Operations Quick Start
 
-nvm 0.40.8 and Node 22.23.4 are installed alongside the original Node 16. New interactive zsh sessions default to Node 22; existing scheduled jobs retain their explicit Node 16 path. See [runtime usage and rollback](NODE-RUNTIME.md) for shell configuration, backups, and the independent explicit yt-dlp runtime path.
+**Current operation:** forward discovery and media acquisition are scheduled and active. The installed acquisition limit is one video per run. Comment and caption collection remain paused. The independent Pushover dispatcher runs every 15 minutes. Historical backfill is not installed.
 
-The supervised October 28 bounded discovery/acquisition test succeeded. See [discovery validation](DISCOVERY-VALIDATION.md) for counts, idempotency and media verification; see RUNNER.md for current cron operations.
+Forward collection covers eligible videos dated on or after **October 26, 2026**. Its bounded discovery automatically recovers missed forward work after outages; manual catch-up is optional acceleration, not required for recovery. Historical backfill is a separate future workflow.
+
+Media and acquisition manifests are stored under `state/acquisitions/<video-id>/` (`media.mkv` and `acquisition.json`). The main inventory is `state/inventory.sqlite3`; comment and caption catalogs/assets are under `state/comments/` and `state/captions/`. Shared YouTube safety evidence is under `state/youtube-safety/`; notification delivery history is in `state/notifications/deliveries.sqlite3`.
+
+Use these read-only commands to check current inventory, pending work, and shared safety:
+
+```sh
+/opt/homebrew/bin/python3 -B -m dls_video_downloader status --json
+/opt/homebrew/bin/python3 -B -m dls_video_downloader plan --json
+/opt/homebrew/bin/python3 -B -m dls_video_downloader --db state/inventory.sqlite3 youtube-safety status --json
+/opt/homebrew/bin/python3 -B -m dls_video_downloader --db state/inventory.sqlite3 youtube-safety events --json
+```
+
+Recent run summaries and sanitized diagnostics are in `state/runs/`; scheduled output is in `state/scheduled/`. To investigate a failure, inspect `status`, the matching run summary/events, and its bounded stderr log. A read-only review does not need another YouTube request; do not rerun collection just to reproduce an error.
+
+Normal scheduled forward acquisitions are intended to rise to **up to two per invocation** after a separately approved cron update. Manual forward catch-up may explicitly use the existing runner with a maximum of **three** acquisitions when an operator wants to accelerate a backlog:
+
+```sh
+/opt/homebrew/bin/python3 -B -m dls_video_downloader run --streams-limit 25 --videos-limit 75 --max-enrich 8 --max-downloads 3 --start-date 2026-10-26
+```
+
+The command above is a manual example, not the installed schedule. It uses the same shared safety gate, operation lock, forward boundary, metadata limits, and per-video retry policy. Each download subprocess may run for up to two hours; later scheduled runs defer safely if the shared lock is occupied. Historical backfill is separate and is initially intended to proceed at approximately one acquisition per day.
+
+See [runner usage and operational limits](RUNNER.md), [comment collection](COMMENTS.md), [caption preservation](CAPTIONS.md), [shared YouTube safety](YOUTUBE-SAFETY.md), and [project handoff](HANDOFF.md) for detailed operating guidance.
 
 ## Requirements and usage
 
@@ -107,7 +130,7 @@ Automatic content classification and acquisition eligibility are independent:
 - Manual rejection/skip: `blocked`.
 - Explicit approval: `eligible`, including older and date-unknown videos.
 
-`eligible` is a planning authorization, not a claim of completed/available/playable media. Acquisition independently verifies readiness. Dates are parameters of each read-only plan, never permanent historical exclusions. The forward acquisition runner adds a strict verified forward-date requirement even for approvals; explicit manual downloads retain historical approval exceptions. YouTube cron jobs are currently paused as noted above.
+`eligible` is a planning authorization, not a claim of completed/available/playable media. Acquisition independently verifies readiness. Dates are parameters of each read-only plan, never permanent historical exclusions. The forward acquisition runner adds a strict verified forward-date requirement even for approvals; explicit manual downloads retain historical approval exceptions. Comments and captions remain paused as noted above.
 
 ## Roadmap and project handoffs
 
@@ -192,7 +215,7 @@ activated in production. See [CAPTIONS.md](CAPTIONS.md) for read-only planning,
 explicit execution, immutable JSON3/VTT assets and independent retry history.
 Installed supplemental jobs do not enable captions.
 
-All DLS cron jobs are currently paused. [Shared YouTube safety](YOUTUBE-SAFETY.md)
+Forward discovery and acquisition are active; supplemental collection remains paused. [Shared YouTube safety](YOUTUBE-SAFETY.md)
 now gates every network workflow; cooldown expiry does not automatically resume
 requests or cron. Inspection is read-only and recovery requires explicit approval.
 
